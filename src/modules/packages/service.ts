@@ -8,6 +8,7 @@ import {
   PackageAccess,
   LectureProgress,
   StaffAssignment,
+  Order,
 } from "../domain/models.js";
 import { packageSchema, packageSubjectSchema } from "../domain/validation.js";
 import { placement, activeTerm } from "../academics/service.js";
@@ -257,6 +258,10 @@ export async function packageDetail(
       ? await studentPackage(user, packageId, !preview)
       : await Package.findById(packageId);
   ensure(pkg, 404, "NOT_FOUND");
+  const latestOrder = user.role === "student"
+    ? await Order.findOne({ studentId: user.userId, packageId })
+        .sort({ createdAt: -1, _id: -1 }).select("status").lean()
+    : null;
   let subjects = await PackageSubject.find({
     packageId,
     ...(user.role === "student" ? { status: "active" } : {}),
@@ -321,6 +326,7 @@ export async function packageDetail(
       ...l,
       completed: progress.some((p) => String(p.lectureId) === String(l._id)),
     })),
+    orderStatus: latestOrder?.status ?? null,
     permissions:
       user.role === "super_admin"
         ? [

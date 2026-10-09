@@ -24,6 +24,7 @@ export async function buy(user: Principal, packageId: string, receiptImage?: str
       packageId,
       status: "pending",
     }).session(session);
+    if (row) return row;
     if (!row) {
       row = (
         await Order.create(
