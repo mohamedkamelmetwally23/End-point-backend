@@ -311,6 +311,9 @@ describe("Platform rules against real MongoDB", () => {
       .post("/api/v1/auth/login")
       .send({ email: "student@test.local", password })
       .expect(409);
+    const devices = await admin.get("/api/v1/admin/audit/other-devices").expect(200);
+    expect(devices.body.data.some((row: { action: string; actor: { _id: string } }) => row.action === "auth.other_device_blocked" && row.actor?._id === studentId)).toBe(true);
+    await student.get("/api/v1/admin/audit/other-devices").expect(403);
     await student.post("/api/v1/auth/logout").expect(200);
     await student.get("/api/v1/auth/me").expect(401);
     await student
@@ -318,6 +321,34 @@ describe("Platform rules against real MongoDB", () => {
       .send({ email: "student@test.local", password })
       .expect(200);
     expect(await StudentDevice.countDocuments({ studentId })).toBe(1);
+  });
+  it("counts more than ten successful logins today and excludes previous days", async () => {
+    const [ten, eleven] = await User.create([
+      { fullName: "Ten Logins", email: "ten@test.local", passwordHash: "unused", role: "lecturer", phone: "" },
+      { fullName: "Eleven Logins", email: "eleven@test.local", passwordHash: "unused", role: "lecturer", phone: "" },
+    ]);
+    try {
+      await AuditLog.create([
+        ...Array.from({ length: 10 }, () => ({ actor: ten!._id, action: "auth.login", entityType: "users", entityId: String(ten!._id) })),
+        ...Array.from({ length: 11 }, () => ({ actor: eleven!._id, action: "auth.login", entityType: "users", entityId: String(eleven!._id) })),
+        { actor: ten!._id, action: "auth.login", entityType: "users", entityId: String(ten!._id), timestamp: new Date(Date.now() - 48 * 3600000) },
+      ]);
+      const result = await admin.get("/api/v1/admin/audit/frequent-logins").expect(200);
+      expect(result.body.data.find((row: { _id: string }) => row._id === String(eleven!._id))?.count).toBe(11);
+      expect(result.body.data.find((row: { _id: string }) => row._id === String(ten!._id))).toBeUndefined();
+      await student.get("/api/v1/admin/audit/frequent-logins").expect(403);
+    } finally {
+      await AuditLog.deleteMany({ actor: { $in: [ten!._id, eleven!._id] } });
+      await User.deleteMany({ _id: { $in: [ten!._id, eleven!._id] } });
+    }
+  });
+  it("audits a staff login from a different browser but not a repeat on the same browser", async () => {
+    const otherBrowser = request.agent(app);
+    const before = await AuditLog.countDocuments({ action: "auth.other_device" });
+    await otherBrowser.post("/api/v1/auth/login").send({ email: "admin@test.local", password }).expect(200);
+    expect(await AuditLog.countDocuments({ action: "auth.other_device" })).toBe(before + 1);
+    await otherBrowser.post("/api/v1/auth/login").send({ email: "admin@test.local", password }).expect(200);
+    expect(await AuditLog.countDocuments({ action: "auth.other_device" })).toBe(before + 1);
   });
   it("creates reusable subjects and isolated multi-subject packages", async () => {
     const s1 = await create("/admin/academics/subjects", {

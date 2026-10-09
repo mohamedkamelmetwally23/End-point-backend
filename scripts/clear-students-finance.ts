@@ -27,7 +27,7 @@ try {
     const result = await transaction(async session => {
       const preservedUsers = await User.find({ role: { $ne: "student" } }).select("_id role").session(session).lean();
       const deleted: Record<string, number> = {};
-      const operations = [
+      const operations: [string, typeof User, mongoose.FilterQuery<unknown>][] = [
         ["sessions", Session, { userId: { $in: loginIds } }],
         ["devices", StudentDevice, { studentId: { $in: loginIds } }],
         ["access", PackageAccess, { studentId: { $in: studentIds } }],
@@ -37,7 +37,7 @@ try {
         ["expenses", Expense, {}],
         ["audit", AuditLog, { $or: [{ actor: { $in: studentIds } }, { entityId: { $in: studentIds.map(String) } }, { entityType: { $in: ["orders", "expenses"] } }] }],
         ["students", User, { role: "student" }],
-      ] as const;
+      ];
       for (const [name, model, filter] of operations) {
         deleted[name] = (await model.deleteMany(filter, { session })).deletedCount;
       }

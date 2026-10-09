@@ -16,7 +16,7 @@ import * as progress from "../progress/service.js";
 import * as finance from "../finance/service.js";
 import * as users from "../users/service.js";
 import { saveAssignment } from "../staff-assignments/service.js";
-import { audit } from "../audit/service.js";
+import { audit, frequentLoginsToday } from "../audit/service.js";
 import { transaction } from "../../shared/database.js";
 const param = (value: unknown) => id.parse(value);
 export const router = Router();
@@ -405,4 +405,6 @@ admin.get(
       .lean(),
   ),
 );
+admin.get("/audit/frequent-logins", endpoint(() => frequentLoginsToday()));
+admin.get("/audit/other-devices", endpoint(() => AuditLog.find({ action: { $in: ["auth.other_device", "auth.other_device_blocked"] } }).sort({ timestamp: -1 }).populate("actor", "fullName email").limit(200).lean()));
 router.use("/admin", admin);

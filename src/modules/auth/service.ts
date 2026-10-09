@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import { z } from "zod";
 import type { Request, Response } from "express";
 import { env } from "../../config/env.js";
-import { User, Session, StudentDevice } from "../domain/models.js";
+import { User, Session, StudentDevice, AuditLog } from "../domain/models.js";
 import { id } from "../domain/validation.js";
 import { activeTerm, placement } from "../academics/service.js";
 import { ensure } from "../../shared/errors.js";
@@ -69,6 +69,15 @@ export async function login(req: Request, res: Response) {
       ? req.signedCookies.device
       : random();
   const sessionToken = random();
+  const deviceId = hash(deviceToken);
+  const registeredDevice = user.role === "student"
+    ? await StudentDevice.findOne({ studentId: user._id }).select("+tokenHash")
+    : null;
+  if (registeredDevice && registeredDevice.tokenHash !== deviceId) {
+    await audit(user._id, "auth.other_device_blocked", "users", user._id, { ip: req.ip, userAgent: req.get("user-agent") || "" });
+    ensure(false, 409, "DEVICE_LIMIT");
+  }
+  const previousLogin = await AuditLog.findOne({ actor: user._id, action: "auth.login", "metadata.deviceId": { $exists: true } }).sort({ timestamp: -1 }).select("metadata").lean();
   await transaction(async (session) => {
     if (user.role === "student") {
       const device = await StudentDevice.findOne({ studentId: user._id })
@@ -99,7 +108,10 @@ export async function login(req: Request, res: Response) {
       ],
       { session },
     );
-    await audit(user._id, "auth.login", "users", user._id, {}, session);
+    const metadata = { deviceId, ip: req.ip, userAgent: req.get("user-agent") || "" };
+    if (previousLogin?.metadata?.deviceId && previousLogin.metadata.deviceId !== deviceId)
+      await audit(user._id, "auth.other_device", "users", user._id, { ip: metadata.ip, userAgent: metadata.userAgent }, session);
+    await audit(user._id, "auth.login", "users", user._id, metadata, session);
   });
   res.cookie("device", deviceToken, {
     ...cookieOptions,
