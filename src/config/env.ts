@@ -9,6 +9,7 @@ const parsed = z
     MONGODB_URI: z.string().min(1),
     FRONTEND_URL: z.string().url().default("http://localhost:5173"),
     COOKIE_SECRET: z.string().min(32),
+    COOKIE_SAME_SITE: z.enum(["lax", "strict", "none"]).default("lax"),
     WHATSAPP_NUMBER: z
       .string()
       .regex(/^\d{8,15}$/)

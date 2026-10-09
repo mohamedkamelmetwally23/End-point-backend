@@ -9,6 +9,7 @@ export const app = express();
 app.disable("x-powered-by");
 app.use(helmet());
 app.use(cors({ origin: env.FRONTEND_URL, credentials: true }));
+app.get("/health", (_req, res) => res.json({ ok: true }));
 app.use(express.json({ limit: "3mb" }));
 app.use(cookieParser(env.COOKIE_SECRET));
 app.use((req, res, next) => {

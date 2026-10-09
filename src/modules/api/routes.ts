@@ -4,6 +4,7 @@ import path from "node:path";
 import {
   summaryDirectory,
   saveSummaryPdf,
+  requireSummaryStorage,
 } from "../../shared/summary-files.js";
 import { z } from "zod";
 import { endpoint } from "../../shared/http.js";
@@ -51,6 +52,7 @@ router.post(
 router.use(authenticate);
 router.get("/summary-pdfs/:filename", async (req, res, next) => {
   try {
+    requireSummaryStorage();
     const filename = z
       .string()
       .regex(/^[a-f0-9-]{36}\.pdf$/)
@@ -171,6 +173,14 @@ const staff = Router();
 staff.use(authorize("super_admin", "content_manager", "lecturer"));
 staff.post(
   "/summary-pdf",
+  (_req, _res, next) => {
+    try {
+      requireSummaryStorage();
+      next();
+    } catch (error) {
+      next(error);
+    }
+  },
   multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: 20 * 1024 * 1024, files: 1, fields: 0 },

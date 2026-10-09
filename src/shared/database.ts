@@ -1,6 +1,19 @@
 import mongoose from "mongoose";
 import { env } from "../config/env.js";
-export const connect = () => mongoose.connect(env.MONGODB_URI);
+let connectionPromise: ReturnType<typeof mongoose.connect> | undefined;
+export function connect() {
+  if (mongoose.connection.readyState === 1) return Promise.resolve(mongoose);
+  if (!connectionPromise) {
+    connectionPromise = mongoose.connect(env.MONGODB_URI).catch((error) => {
+      connectionPromise = undefined;
+      throw error;
+    });
+  }
+  return connectionPromise;
+}
+mongoose.connection.on("disconnected", () => {
+  connectionPromise = undefined;
+});
 export async function transaction<T>(
   work: (session: mongoose.ClientSession) => Promise<T>,
 ): Promise<T> {

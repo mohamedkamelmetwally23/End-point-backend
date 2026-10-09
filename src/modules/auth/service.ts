@@ -15,7 +15,7 @@ const random = () => crypto.randomBytes(48).toString("base64url");
 const cookieOptions = {
   httpOnly: true,
   secure: env.NODE_ENV === "production",
-  sameSite: "lax" as const,
+  sameSite: env.COOKIE_SAME_SITE,
   signed: true,
   path: "/",
 };
