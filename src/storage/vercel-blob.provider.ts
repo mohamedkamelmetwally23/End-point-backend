@@ -18,6 +18,14 @@ function options(access: Visibility) {
   const prefix = access === "public" ? "PUBLIC" : "PRIVATE";
   const storeId = process.env[`BLOB_${prefix}_STORE_ID`];
   const token = process.env[`BLOB_${prefix}_READ_WRITE_TOKEN`];
+  if (!((storeId && process.env.VERCEL_OIDC_TOKEN) || token)) {
+    console.error("BLOB_CONFIGURATION_MISSING", {
+      access,
+      storeIdPresent: Boolean(storeId),
+      oidcPresent: Boolean(process.env.VERCEL_OIDC_TOKEN),
+      fallbackTokenPresent: Boolean(token),
+    });
+  }
   ensure(
     (storeId && process.env.VERCEL_OIDC_TOKEN) || token,
     503,
@@ -35,6 +43,13 @@ async function safe<T>(operation: () => Promise<T>): Promise<T> {
     if (error instanceof ApiError) throw error;
     if (error instanceof Error && error.name === "BlobNotFoundError")
       throw new ApiError(404, "FILE_NOT_FOUND");
+    // Log only a bounded error class, never provider messages, tokens or URLs.
+    const errorName = error instanceof Error ? error.name : "UnknownError";
+    console.error("BLOB_PROVIDER_FAILURE", {
+      errorName: /^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(errorName)
+        ? errorName
+        : "UnknownError",
+    });
     throw new ApiError(503, "STORAGE_UNAVAILABLE");
   }
 }
