@@ -6,16 +6,16 @@ The API was already split correctly: `src/app.ts` constructs/exports the Express
 
 | Setting | Value |
 | --- | --- |
-| Root Directory | Repository root if `package.json`, `src`, `api`, and `vercel.json` are at the root of End-point-backend; `BackEnd` when deploying this entire workspace repository |
-| Framework Preset | Other |
+| Root Directory | Repository root if `package.json`, `src`, and `vercel.json` are at the root of End-point-backend; `BackEnd` when deploying this entire workspace repository |
+| Framework Preset | Express |
 | Build Command | `npm run build` |
 | Output Directory | Clear/unset the override; do not enter `public`, `dist`, or `build` |
 | Install Command | `npm install` |
 | Node.js | 22.x (matches local validation) |
 
-`vercel.json` explicitly sets framework/output directory to null, keeps the TypeScript build, and rewrites all paths to the single `/api/index` function. It has no legacy `builds` or v1 configuration. The function uses the existing app and preserves the original request URLs: `/api/v1/auth/login`, `/api/v1/student/packages`, etc. Do not append another `/api` prefix. `GET /health` and the existing `GET /api/v1/health` are lightweight liveness checks and do not connect/query MongoDB in the Vercel handler; they do not prove database readiness.
+`vercel.json` explicitly selects `framework: "express"` and keeps the TypeScript build. The output-directory override is explicitly reset to null; no static output directory or rewrite is configured. The previous `framework: null` / `outputDirectory: null` configuration still selected the static Other build path in CLI 62.7.0 and failed expecting `public`; null was not a reliable fix. Native Express uses the default-exported `src/app.ts` and preserves the original request URLs: `/api/v1/auth/login`, `/api/v1/student/packages`, etc. Do not append another `/api` prefix. `GET /health` and the existing `GET /api/v1/health` are lightweight liveness checks and do not connect/query MongoDB in the Vercel handler; they do not prove database readiness.
 
-Vercel compiles `api/index.ts` with its TypeScript runtime. `tsconfig.json` includes it for `npm run typecheck`. The unchanged `npm run build` compiles the traditional server under `src` to `dist`; `npm start` still runs `dist/server.js`. The function entrypoint never imports `server.ts`, starts a listener, or starts an interval.
+Vercel bundles `src/app.ts` using its native Express framework support. The previous `api/index.ts` was removed: keeping that directory alongside native Express caused Vercel to reserve `/api/*` for file-based functions and generate a 404 before the Express catch-all, which would break this API's `/api/v1/*` routes. The only Vercel entry is the default-exported app; no listener or interval starts during import. The unchanged `npm run build` compiles the traditional server under `src` to `dist`; `npm start` still runs `dist/server.js`. The native app entrypoint never imports `server.ts`, starts a listener, or starts an interval.
 
 ## Environment variables
 
@@ -37,7 +37,7 @@ CORS retains an exact configured origin and `credentials: true`; it never uses a
 
 ## MongoDB connection reuse
 
-`src/shared/database.ts` shares an in-flight connection promise, reuses an established connection in a warm instance, clears failed attempts, and resets the cache on disconnect. `api/index.ts` connects before forwarding database-backed requests. Database connection failure returns a generic 503 without exposing connection details. Connections are not disconnected after each request. The local server and database scripts continue using the same helper.
+`src/shared/database.ts` shares an in-flight connection promise, reuses an established connection in a warm instance, clears failed attempts, and resets the cache on disconnect. The shared app connects before database-backed requests when `VERCEL=1`; health and CORS preflight bypass the connection. The local server still connects before listening. Database connection failure returns a generic 503 without exposing connection details. Connections are not disconnected after each request. The local server and database scripts continue using the same helper.
 
 ## Remaining deployment blockers and runtime differences
 
@@ -67,6 +67,7 @@ npm start
 Check `http://localhost:4000/health` (or the configured local port) and `/api/v1/health`. The deployment tests import both app and function without a listener, exercise health/CORS/routing/database failure, verify explicit storage blocking, and test cached/concurrent/retried MongoDB connections without network dependence. Real database tests use separate generated test databases.
 
 Official references:
+- [Native Express deployment](https://vercel.com/docs/frameworks/backend/express)
 - [Vercel configuration](https://vercel.com/docs/project-configuration/vercel-json)
 - [Node.js function runtime and TypeScript](https://vercel.com/docs/functions/runtimes/node-js)
 - [Function payload limits](https://vercel.com/docs/functions/limitations)
@@ -78,4 +79,14 @@ Local runtime smoke check: `node --import tsx scripts/verify-local-runtime.ts` a
 
 Validation performed locally: `npm install` completed with zero reported vulnerabilities; `npm run build`, `npm run typecheck`, and `npm run lint` passed. The compiled app import exited without a listener. A temporary traditional server returned HTTP 200 for `/health` with `{ "ok": true }` and for `/api/v1/health` with `{ "data": { "status": "ok" } }`. All seven deployment/connection-specific tests passed. No Vercel account credentials/dashboard were used and no live deployment was attempted.
 
-Final full-suite result: `npm test` passed all **49 tests across 5 files** after correcting the new negative-route assertion to expect 404 for the invalid duplicated prefix. No remaining test failures in the final run.
+Full-suite baseline before the native Express follow-up: `npm test` passed all **49 tests across 5 files** after correcting the new negative-route assertion to expect 404 for the invalid duplicated prefix. No remaining test failures in the final run.
+
+
+## Follow-up: CLI 62.7.0 static-output failure
+
+The failing deployed commit was confirmed to be present locally (`5d38f7f`). This was not a missing push. The original `framework: null` selected Other and still expected `public` after compilation. The fix selects the supported native Express framework, exports the shared app as default, and moves the serverless-only cached connection gate into the shared app. The local server stays unchanged. Helmet default imports are normalized across ESM/CJS for Vercel's TypeScript bundler without removing any security middleware; tests assert its response headers.
+
+Clear any explicit `public` Output Directory override in the dashboard and use Framework Preset Express. Keep the existing build/install commands. `outputDirectory: null` in the native Express configuration also resets the legacy project override. No static directory is created and the repository is not served as static output.
+
+
+Follow-up validation: `vercel build` using **CLI 62.7.0** completed successfully in an isolated local checkout with synthetic project settings (including a legacy dashboard `outputDirectory: "public"` overridden by the repository configuration). It produced `.vercel/output/functions/index.func` with handler `src/app.js`, runtime `nodejs22.x`, and native Express catch-all routing. The packaged function itself returned 200 from both health routes with Helmet security headers; the generated routing config has no reserved `/api/*` 404. `npm run build`, `npm run typecheck`, `npm run lint`, the 7 serverless/connection tests, and the local traditional-server smoke check passed after the follow-up. This was a local CLI build only: no account was linked, no Vercel dashboard was changed, and no deployment was published.

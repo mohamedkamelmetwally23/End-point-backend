@@ -14,7 +14,7 @@
     "db:reset-academic": "node --import tsx scripts/reset-academic-data.ts --reset-test-academic",
     "db:activate-first-term": "node --import tsx scripts/apply-first-term.ts --apply-test-first-term",
     "bootstrap:admin": "node --import tsx scripts/bootstrap-admin.ts",
-    "lint": "eslint src api tests scripts",
+    "lint": "eslint src tests scripts",
     "verify:setup": "node --import tsx scripts/verify-setup.ts"
   },
   "dependencies": {

@@ -1,4 +1,4 @@
-import { it, expect, vi, beforeEach } from "vitest";
+import { it, expect, vi, beforeEach, afterEach } from "vitest";
 import express from "express";
 import request from "supertest";
 import { env } from "../src/config/env.js";
@@ -10,21 +10,20 @@ vi.mock("../src/shared/database.js", async (importOriginal) => {
 import { connect } from "../src/shared/database.js";
 import { requireSummaryStorage } from "../src/shared/summary-files.js";
 beforeEach(() => {
+  vi.stubEnv("VERCEL", "1");
   vi.mocked(connect)
     .mockReset()
     .mockResolvedValue(undefined as never);
 });
+afterEach(() => vi.unstubAllEnvs());
 async function serverlessApp() {
-  const { default: handler } = await import("../api/index.js");
-  const host = express();
-  host.use(handler);
-  return host;
+  const { default: app } = await import("../src/app.js");
+  return app;
 }
 it("imports app and Vercel entrypoint without listening", async () => {
   const listen = vi.spyOn(express.application, "listen");
   try {
     await import("../src/app.js");
-    await import("../api/index.js");
     expect(listen).not.toHaveBeenCalled();
     expect(connect).not.toHaveBeenCalled();
   } finally {
@@ -33,7 +32,11 @@ it("imports app and Vercel entrypoint without listening", async () => {
 });
 it("serves both health URLs and CORS preflight without connecting to MongoDB", async () => {
   const host = await serverlessApp();
-  await request(host).get("/health").expect(200, { ok: true });
+  await request(host)
+    .get("/health")
+    .expect("X-Content-Type-Options", "nosniff")
+    .expect("X-Frame-Options", "SAMEORIGIN")
+    .expect(200, { ok: true });
   await request(host)
     .get("/api/v1/health")
     .expect(200, { data: { status: "ok" } });
