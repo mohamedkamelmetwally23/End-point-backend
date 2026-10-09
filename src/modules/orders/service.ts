@@ -34,7 +34,8 @@ export async function buy(user: Principal, packageId: string, receiptImage?: str
       await audit(user.userId, "order.created", "orders", row._id, {}, session);
     }
     if (receiptImage) {
-      await bindFile(user, receiptImage, row.receiptImage, "receipt", undefined, session);
+      if (row.receiptImage?.startsWith("/api/v1/files/"))
+        await bindFile(user, null, row.receiptImage, "receipt", undefined, session);
       row.receiptImage = receiptImage;
       await row.save({ session });
     }

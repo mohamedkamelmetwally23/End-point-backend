@@ -109,7 +109,6 @@ export async function uploadPermission(
   scopeId: string | undefined,
   editing = false,
 ) {
-  if (purpose === "receipt" && user.role === "student") return;
   ensure(
     ["super_admin", "content_manager", "lecturer"].includes(user.role),
     403,
@@ -405,6 +404,7 @@ export async function authorizeDownload(user: Principal, id: string) {
   }
   if (
     file.purpose === "receipt" &&
+    user.role !== "student" &&
     (String(file.uploadedBy) === user.userId ||
       (await Expense.exists({
         receiptImage: reference,

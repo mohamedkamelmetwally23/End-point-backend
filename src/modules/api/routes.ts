@@ -3,7 +3,7 @@ import * as storage from "../../storage/storage.service.js";
 import { z } from "zod";
 import { endpoint } from "../../shared/http.js";
 import { authenticate, authorize } from "../../middleware/auth.js";
-import { id } from "../domain/validation.js";
+import { id, receiptImageSchema } from "../domain/validation.js";
 import { ensure } from "../../shared/errors.js";
 import { User, Order, AuditLog, StaffAssignment } from "../domain/models.js";
 import * as auth from "../auth/service.js";
@@ -153,7 +153,7 @@ student.post(
 student.post(
   "/packages/:id/buy",
   endpoint((req) => {
-    const data = z.object({ receiptImage: z.string().regex(/^\/api\/v1\/files\/[a-f\d]{24}\.(?:png|jpg|webp)$/).optional() }).parse(req.body || {});
+    const data = z.object({ receiptImage: receiptImageSchema.optional() }).parse(req.body || {});
     return orders.buy(req.principal, param(req.params.id), data.receiptImage);
   }),
 );
