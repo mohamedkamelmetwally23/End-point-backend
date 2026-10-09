@@ -10,7 +10,7 @@ The API was already split correctly: `src/app.ts` constructs/exports the Express
 | Framework Preset | Express |
 | Build Command | `npm run build` |
 | Output Directory | Clear/unset the override; do not enter `public`, `dist`, or `build` |
-| Install Command | `npm install` |
+| Install Command | `npm ci --include=dev` |
 | Node.js | 22.x (matches local validation) |
 
 `vercel.json` explicitly selects `framework: "express"` and keeps the TypeScript build. The output-directory override is explicitly reset to null; no static output directory or rewrite is configured. The previous `framework: null` / `outputDirectory: null` configuration still selected the static Other build path in CLI 62.7.0 and failed expecting `public`; null was not a reliable fix. Native Express uses the default-exported `src/app.ts` and preserves the original request URLs: `/api/v1/auth/login`, `/api/v1/student/packages`, etc. Do not append another `/api` prefix. `GET /health` and the existing `GET /api/v1/health` are lightweight liveness checks and do not connect/query MongoDB in the Vercel handler; they do not prove database readiness.
