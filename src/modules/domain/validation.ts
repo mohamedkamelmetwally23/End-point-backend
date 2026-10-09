@@ -217,5 +217,5 @@ export const expenseSchema = z.object({
   date: z.iso.datetime(),
   notes: z.string().max(2000).default(""),
   receiptUrl: z.union([https, storedReference]).nullable().optional(),
-  receiptImage: storedReference.nullable().optional(),
+  receiptImage: z.union([receiptImageSchema, storedReference]).nullable().optional(),
 });

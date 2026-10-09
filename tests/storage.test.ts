@@ -260,6 +260,21 @@ describe("Blob storage with real MongoDB and mocked external Blob transport", ()
     await deleteExpense(manager, String(expense._id));
     expect(blobs.has(nextKey)).toBe(false);
   });
+  it("stores staff expense receipts inline and preserves ownership checks", async () => {
+    const receiptImage = `data:image/png;base64,${png.toString("base64")}`;
+    const fields = { category: "Inline receipt", amount: 100, date: new Date().toISOString(), receiptImage };
+    const filesBefore = await StoredFile.countDocuments();
+    for (const owner of [manager, lecturer]) {
+      const expense = await saveExpense(owner, fields);
+      expect(expense.receiptImage).toBe(receiptImage);
+      await expect(saveExpense(student, fields, String(expense._id))).rejects.toThrow("FORBIDDEN");
+      await saveExpense(owner, { ...fields, receiptImage: null }, String(expense._id));
+      await saveExpense(owner, fields, String(expense._id));
+      await deleteExpense(owner, String(expense._id));
+    }
+    expect(await StoredFile.countDocuments()).toBe(filesBefore);
+    await expect(saveExpense(manager, { ...fields, receiptImage: "data:image/png;base64,invalid" })).rejects.toThrow();
+  });
   it("enforces size, MIME, ownership and package scope before upload", async () => {
     const data = {
       purpose: "summary",

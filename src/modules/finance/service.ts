@@ -95,8 +95,8 @@ export async function saveExpense(
     if (data.receiptImage !== undefined)
       await bindFile(
         user,
-        data.receiptImage,
-        previousFile,
+        data.receiptImage?.startsWith("data:image/") ? null : data.receiptImage,
+        typeof previousFile === "string" && previousFile.startsWith("data:image/") ? null : previousFile,
         "receipt",
         undefined,
         session,
@@ -119,7 +119,7 @@ export async function saveExpense(
     return record;
   });
   if (data.receiptImage !== undefined && previousFile !== data.receiptImage)
-    await cleanupFile(previousFile);
+    if (!(typeof previousFile === "string" && previousFile.startsWith("data:image/"))) await cleanupFile(previousFile);
   if (data.receiptUrl !== undefined && previousReceiptUrl !== data.receiptUrl)
     await cleanupFile(previousReceiptUrl);
   return result;
@@ -145,7 +145,8 @@ export async function deleteExpense(user: Principal, entityId: string) {
       undefined,
       session,
     );
-    await bindFile(user, null, previousFile, "receipt", undefined, session);
+    if (!(typeof previousFile === "string" && previousFile.startsWith("data:image/")))
+      await bindFile(user, null, previousFile, "receipt", undefined, session);
     await row.deleteOne({ session });
     await audit(
       user.userId,
@@ -156,6 +157,6 @@ export async function deleteExpense(user: Principal, entityId: string) {
       session,
     );
   });
-  await cleanupFile(previousFile);
+  if (!(typeof previousFile === "string" && previousFile.startsWith("data:image/"))) await cleanupFile(previousFile);
   await cleanupFile(previousReceiptUrl);
 }
