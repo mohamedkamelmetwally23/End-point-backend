@@ -31,7 +31,7 @@ describe("Domain validation", () => {
         title: "Lecture",
         summaryUrl: pdf,
       }).success,
-    ).toBe(true);
+    ).toBe(false);
     expect(
       summaryPdfSchema.safeParse("data:application/pdf;base64,aGVsbG8=")
         .success,

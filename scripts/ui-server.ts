@@ -9,6 +9,61 @@ process.env.FRONTEND_URL = "http://127.0.0.1:4175";
 process.env.WHATSAPP_NUMBER = "201234567890";
 const { env } = await import("../src/config/env.js");
 const { app } = await import("../src/app.js");
+// Test browsers can use documentation-range forwarded IPs to keep independent
+// clients independent under the real authentication rate limiter.
+app.set("trust proxy", true);
+// Browser tests use real API/database logic and an isolated in-memory Blob transport.
+// These overrides exist only in this test server; app.ts never imports this script.
+const { blobProvider } = await import("../src/storage/vercel-blob.provider.js");
+const { StoredFile } = await import("../src/storage/storage.service.js");
+const testBlobs = new Map<
+  string,
+  { bytes: Buffer; mime: string; access: string }
+>();
+const testBlobUrl = (pathname: string) =>
+  `http://127.0.0.1:4001/__test/blob?pathname=${encodeURIComponent(pathname)}`;
+blobProvider.authorizeUpload = async () => ({
+  type: "blob.generate-presigned-url",
+  presignedUrlPayload: {
+    delegationToken: `${Buffer.from(JSON.stringify({ storeId: "browsertest" })).toString("base64url")}.test`,
+    signature: "test",
+    params: {},
+  },
+});
+blobProvider.head = async (pathname) => {
+  const value = testBlobs.get(pathname)!;
+  return {
+    pathname,
+    size: value.bytes.length,
+    contentType: value.mime,
+    url: pathname.includes("/cover/")
+      ? `https://browsertest.public.blob.vercel-storage.com/${pathname}`
+      : testBlobUrl(pathname),
+    downloadUrl: testBlobUrl(pathname),
+    uploadedAt: new Date(),
+    contentDisposition: "inline",
+    cacheControl: "no-store",
+    etag: "test",
+  };
+};
+blobProvider.get = async (pathname) => {
+  const value = testBlobs.get(pathname)!;
+  return {
+    statusCode: 200,
+    headers: new Headers(),
+    stream: new ReadableStream({
+      start(c) {
+        c.enqueue(value.bytes);
+        c.close();
+      },
+    }),
+    blob: await blobProvider.head(pathname, "private"),
+  };
+};
+blobProvider.download = async (pathname) => testBlobUrl(pathname);
+blobProvider.delete = async (pathname) => {
+  testBlobs.delete(pathname);
+};
 const {
   models,
   User,
@@ -29,6 +84,8 @@ for (const model of Object.values(models)) {
   await model.createCollection();
   await model.syncIndexes();
 }
+await StoredFile.createCollection();
+await StoredFile.syncIndexes();
 const passwordHash = await bcrypt.hash("Browser-test-password!", 4);
 const admin = await User.create({
   fullName: "Test Administrator",
@@ -65,10 +122,13 @@ const subject = await Subject.create({
   name: "Algorithms",
   collegeId: college._id,
   academicYearId: year._id,
+  termId: term._id,
 });
 const other = await Subject.create({
   name: "Databases",
   collegeId: college._id,
+  academicYearId: year._id,
+  termId: term._id,
 });
 const base = {
   collegeId: college._id,
@@ -83,7 +143,7 @@ const free = await Package.create({
   isFree: true,
   price: 0,
 });
-await Package.create({
+const paid = await Package.create({
   ...base,
   name: "Complete Term",
   isFree: false,
@@ -93,6 +153,7 @@ const ps = await PackageSubject.create({
   packageId: free._id,
   subjectId: subject._id,
 });
+await PackageSubject.create({ packageId: paid._id, subjectId: subject._id });
 await PackageSubject.create({
   packageId: free._id,
   subjectId: other._id,
@@ -127,6 +188,34 @@ await StaffAssignment.create({
   permissions: ["content:view"],
 });
 const testApp = express();
+testApp.post(
+  "/__test/blob",
+  express.raw({ type: "*/*", limit: "21mb" }),
+  (req, res) => {
+    const pathname = String(req.query.pathname);
+    testBlobs.set(pathname, {
+      bytes: req.body as Buffer,
+      mime: req.get("content-type") || "application/pdf",
+      access: "private",
+    });
+    res.json({
+      url: testBlobUrl(pathname),
+      downloadUrl: testBlobUrl(pathname),
+      pathname,
+      contentType: req.get("content-type"),
+      contentDisposition: "inline",
+      etag: "test",
+    });
+  },
+);
+testApp.get("/__test/blob", (req, res) => {
+  const file = testBlobs.get(String(req.query.pathname));
+  if (!file) {
+    res.sendStatus(404);
+    return;
+  }
+  res.type(file.mime).send(file.bytes);
+});
 testApp.post("/__test/cleanup", async (_req, res) => {
   confirmedTestDatabase(mongoose.connection.name, "test");
   await mongoose.connection.dropDatabase();

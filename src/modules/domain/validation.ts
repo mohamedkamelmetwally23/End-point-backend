@@ -10,6 +10,9 @@ const https = z
     (v) => URL.canParse(v) && new URL(v).protocol === "https:",
     "HTTPS required",
   );
+const storedReference = z
+  .string()
+  .regex(/^\/api\/v1\/files\/[a-f\d]{24}\.(?:pdf|png|jpg|webp)$/);
 export const academicYearsCountSchema = z.object({
   collegeId: id,
   yearCount: z.number().int().min(1).max(12),
@@ -57,7 +60,7 @@ export const packageSchema = z
     termId: id,
     price: z.number().int().min(0).max(100000000),
     isFree: z.boolean(),
-    coverUrl: https.optional(),
+    coverUrl: https.nullable().optional(),
     status: z.enum(["draft", "active", "archived"]).default("draft"),
   })
   .refine(
@@ -94,7 +97,7 @@ export const lectureSchema = z
     summaryUrl: z
       .union([
         https,
-        summaryPdfSchema,
+        storedReference,
         z.string().regex(/^\/api\/v1\/summary-pdfs\/[a-f0-9-]{36}\.pdf$/),
       ])
       .nullable()
@@ -133,7 +136,7 @@ export const materialSchema = z
     lectureId: id,
     type: z.enum(["youtube", "pdf", "image", "text"]),
     title: name,
-    url: https.optional(),
+    url: z.union([https, storedReference]).optional(),
     body: z.string().max(100000).optional(),
     order: z.number().int().min(0).default(0),
   })
@@ -144,12 +147,18 @@ export const materialSchema = z
       ctx.addIssue({ code: "custom", message: "URL required" });
     if (v.type === "youtube" && v.url && !youtubeId(v.url))
       ctx.addIssue({ code: "custom", message: "Valid YouTube video required" });
-    if (v.type === "pdf" && v.url && !/\.pdf$/i.test(new URL(v.url).pathname))
+    if (
+      v.type === "pdf" &&
+      v.url &&
+      !/\.pdf$/i.test(new URL(v.url, "https://endpoint.invalid").pathname)
+    )
       ctx.addIssue({ code: "custom", message: "PDF reference required" });
     if (
       v.type === "image" &&
       v.url &&
-      !/\.(png|jpe?g|webp|gif|avif)$/i.test(new URL(v.url).pathname)
+      !/\.(png|jpe?g|webp|gif|avif)$/i.test(
+        new URL(v.url, "https://endpoint.invalid").pathname,
+      )
     )
       ctx.addIssue({ code: "custom", message: "Image reference required" });
   });
@@ -207,6 +216,6 @@ export const expenseSchema = z.object({
   currency: z.literal("EGP").default("EGP"),
   date: z.iso.datetime(),
   notes: z.string().max(2000).default(""),
-  receiptUrl: https.optional(),
-  receiptImage: receiptImageSchema.nullable().optional(),
+  receiptUrl: z.union([https, storedReference]).nullable().optional(),
+  receiptImage: storedReference.nullable().optional(),
 });

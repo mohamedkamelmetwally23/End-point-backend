@@ -41,9 +41,7 @@ CORS retains an exact configured origin and `credentials: true`; it never uses a
 
 ## Remaining deployment blockers and runtime differences
 
-**Persistent PDF storage is a blocker for upload/download feature parity.** `src/shared/summary-files.ts` writes new summary files under `storage/summary-pdfs`. Routes `POST /api/v1/staff/summary-pdf` and `GET /api/v1/summary-pdfs/:filename` in `src/modules/api/routes.ts` depend on that disk. Vercel does not provide persistent writable application storage. Under `VERCEL=1`, these routes explicitly return `503 PDF_STORAGE_UNAVAILABLE_ON_VERCEL` rather than pretending a temporary write is durable. Local uploads remain available. Existing external HTTPS PDF links and legacy inline summaries do not depend on these disk routes. No storage provider was configured or introduced, and no existing files were moved/deleted.
-
-Additionally, the 20 MiB PDF upload cannot pass through a Vercel Function: the platform caps request/response payloads at 4.5 MB. Increasing Multer limits or using `/tmp` cannot solve either persistence or the inbound request limit. Persistent storage plus direct uploads must be configured separately before this PDF workflow can run on Vercel.
+**File storage:** PDF summaries, educational files, receipt images and covers now use Vercel Blob in every environment. Large uploads go directly from the browser to Blob using constrained presigned uploads; protected downloads redirect to a one-minute signed URL after backend authorization, avoiding Function payload limits in both directions. There is no persistent local filesystem dependency. Follow [STORAGE.md](STORAGE.md) to connect separate private/public stores and migrate existing files. Storage is unavailable until those stores/credentials are configured; there is no disk fallback.
 
 **Scheduled publication:** `src/server.ts` publishes due lectures at startup and every 15 seconds locally. That file intentionally never runs in Vercel Functions. A real external scheduler/worker invoking the existing `publishScheduled` service through an appropriately authenticated integration is required for automatic publication on Vercel. No cron plan, schedule, new public worker endpoint, or provider was invented. Scheduled lectures remain scheduled until a publisher runs.
 
@@ -64,7 +62,7 @@ npm run dev
 npm start
 ```
 
-Check `http://localhost:4000/health` (or the configured local port) and `/api/v1/health`. The deployment tests import both app and function without a listener, exercise health/CORS/routing/database failure, verify explicit storage blocking, and test cached/concurrent/retried MongoDB connections without network dependence. Real database tests use separate generated test databases.
+Check `http://localhost:4000/health` (or the configured local port) and `/api/v1/health`. The deployment tests import both app and function without a listener, exercise health/CORS/routing/database failure, verify Blob upload/download permissions and metadata, and test cached/concurrent/retried MongoDB connections without network dependence. Real database tests use separate generated test databases.
 
 Official references:
 - [Native Express deployment](https://vercel.com/docs/frameworks/backend/express)

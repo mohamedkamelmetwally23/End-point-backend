@@ -1,23 +1,11 @@
 import { Router } from "express";
-import multer from "multer";
-import path from "node:path";
-import {
-  summaryDirectory,
-  saveSummaryPdf,
-  requireSummaryStorage,
-} from "../../shared/summary-files.js";
+import * as storage from "../../storage/storage.service.js";
 import { z } from "zod";
 import { endpoint } from "../../shared/http.js";
 import { authenticate, authorize } from "../../middleware/auth.js";
-import { id, receiptImageSchema } from "../domain/validation.js";
+import { id } from "../domain/validation.js";
 import { ensure } from "../../shared/errors.js";
-import {
-  User,
-  Order,
-  AuditLog,
-  StaffAssignment,
-  Lecture,
-} from "../domain/models.js";
+import { User, Order, AuditLog, StaffAssignment } from "../domain/models.js";
 import * as auth from "../auth/service.js";
 import * as academics from "../academics/service.js";
 import * as packages from "../packages/service.js";
@@ -50,33 +38,58 @@ router.post(
   endpoint((req, res) => auth.logout(req, res)),
 );
 router.use(authenticate);
-router.get("/summary-pdfs/:filename", async (req, res, next) => {
-  try {
-    requireSummaryStorage();
+router.get(
+  "/files/:filename",
+  endpoint(async (req, res) => {
     const filename = z
       .string()
-      .regex(/^[a-f0-9-]{36}\.pdf$/)
+      .regex(/^[a-f\d]{24}\.(pdf|png|jpg|webp)$/)
       .parse(req.params.filename);
-    const url = `/api/v1/summary-pdfs/${filename}`;
-    const lecture = await Lecture.findOne({ summaryUrl: url });
-    if (lecture)
-      await packages.lectureDetail(req.principal, String(lecture._id));
-    else
-      ensure(
-        req.principal.role === "super_admin" ||
-          req.principal.role === "content_manager" ||
-          req.principal.role === "lecturer",
-        403,
-        "FORBIDDEN",
-      );
     res.setHeader("Cache-Control", "private, no-store");
-    res.sendFile(path.join(summaryDirectory, filename), (error) => {
-      if (error) next(error);
-    });
-  } catch (error) {
-    next(error);
-  }
-});
+    res.redirect(
+      302,
+      await storage.createDownloadAccess(
+        req.principal,
+        filename.split(".")[0]!,
+      ),
+    );
+  }),
+);
+// Legacy references must be migrated; never pretend a missing local file exists.
+router.get(
+  "/summary-pdfs/:filename",
+  endpoint(async () => {
+    ensure(false, 404, "FILE_REUPLOAD_REQUIRED");
+  }),
+);
+router.post(
+  "/files/prepare",
+  endpoint((req) => storage.prepareUpload(req.principal, req.body)),
+);
+router.post(
+  "/files/:id/upload",
+  endpoint(async (req, res) => {
+    z.object({
+      type: z.literal("blob.generate-presigned-url"),
+      payload: z.object({
+        pathname: z.string(),
+        multipart: z.literal(false).optional(),
+      }),
+    }).parse(req.body);
+    const result = await storage.authorizeUploadRequest(
+      req,
+      param(req.params.id),
+    );
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json(result);
+  }),
+);
+router.post(
+  "/files/:id/complete",
+  endpoint((req) =>
+    storage.completeUpload(req.principal, param(req.params.id)),
+  ),
+);
 router.get(
   "/auth/me",
   endpoint((req) => auth.profile(req.principal.userId)),
@@ -171,41 +184,11 @@ student.get(
 router.use("/student", student);
 const staff = Router();
 staff.use(authorize("super_admin", "content_manager", "lecturer"));
+// Old multipart clients get an explicit upgrade error; large files must bypass Functions.
 staff.post(
-  "/summary-pdf",
-  (_req, _res, next) => {
-    try {
-      requireSummaryStorage();
-      next();
-    } catch (error) {
-      next(error);
-    }
-  },
-  multer({
-    storage: multer.memoryStorage(),
-    limits: { fileSize: 20 * 1024 * 1024, files: 1, fields: 0 },
-  }).single("pdf"),
-  endpoint(async (req) => {
-    ensure(req.file, 400, "INVALID_SUMMARY_PDF");
-    ensure(
-      req.file.buffer.toString("ascii", 0, 5) === "%PDF-",
-      400,
-      "INVALID_SUMMARY_PDF",
-    );
-    return saveSummaryPdf(req.file.buffer);
-  }),
-);
-staff.post(
-  "/receipt-image",
-  multer({
-    storage: multer.memoryStorage(),
-    limits: { fileSize: 2 * 1024 * 1024, files: 1, fields: 0 },
-  }).single("image"),
-  endpoint(async (req) => {
-    ensure(req.file, 400, "INVALID_RECEIPT_IMAGE");
-    return receiptImageSchema.parse(
-      `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`,
-    );
+  ["/summary-pdf", "/receipt-image"],
+  endpoint(async () => {
+    ensure(false, 400, "DIRECT_UPLOAD_REQUIRED");
   }),
 );
 staff.get(

@@ -12,6 +12,7 @@ import {
 import { audit } from "../audit/service.js";
 import { transaction } from "../../shared/database.js";
 import { ensure } from "../../shared/errors.js";
+import { bindFile, cleanupFile } from "../../storage/storage.service.js";
 export async function saveLecture(
   user: Principal,
   body: unknown,
@@ -51,7 +52,26 @@ export async function saveLecture(
       subject._id,
       "content:archive",
     );
-  return transaction(async (session) => {
+  let previousFile: unknown;
+  const result = await transaction(async (session) => {
+    const current = entityId
+      ? await Lecture.findById(entityId).session(session)
+      : null;
+    if (entityId) ensure(current, 404, "NOT_FOUND");
+    ensure(
+      !current || current.status === existing?.status,
+      409,
+      "CONTENT_CHANGED_RETRY",
+    );
+    previousFile = current?.summaryUrl;
+    await bindFile(
+      user,
+      data.summaryUrl === undefined ? previousFile : data.summaryUrl,
+      previousFile,
+      "summary",
+      data.packageSubjectId,
+      session,
+    );
     const fields = {
       ...data,
       updatedBy: user.userId,
@@ -61,8 +81,8 @@ export async function saveLecture(
           ? { publishedAt: undefined }
           : {}),
     };
-    const row = existing
-      ? await existing.set(fields).save({ session })
+    const row = current
+      ? await current.set(fields).save({ session })
       : (
           await Lecture.create([{ ...fields, createdBy: user.userId }], {
             session,
@@ -78,6 +98,9 @@ export async function saveLecture(
     );
     return row;
   });
+  if (data.summaryUrl !== undefined && previousFile !== data.summaryUrl)
+    await cleanupFile(previousFile);
+  return result;
 }
 export async function saveMaterial(
   user: Principal,
@@ -102,7 +125,8 @@ export async function saveMaterial(
       subject._id,
       "content:publish",
     );
-  return transaction(async (session) => {
+  let previousFile: unknown;
+  const result = await transaction(async (session) => {
     const row = entityId
       ? await Material.findOne({
           _id: entityId,
@@ -110,6 +134,15 @@ export async function saveMaterial(
         }).session(session)
       : null;
     if (entityId) ensure(row, 404, "NOT_FOUND");
+    previousFile = row?.url;
+    await bindFile(
+      user,
+      data.type === "text" ? undefined : data.url,
+      previousFile,
+      "material",
+      data.lectureId,
+      session,
+    );
     const fields = {
       ...data,
       url: data.type === "text" ? undefined : data.url,
@@ -128,6 +161,9 @@ export async function saveMaterial(
     );
     return record;
   });
+  if (previousFile !== data.url || data.type === "text")
+    await cleanupFile(previousFile);
+  return result;
 }
 export async function deleteDraft(
   user: Principal,
@@ -156,10 +192,56 @@ export async function deleteDraft(
     subject._id,
     "content:delete_draft",
   );
+  const removedFiles: unknown[] = [];
   await transaction(async (session) => {
+    removedFiles.length = 0;
+    const lock = await Lecture.updateOne(
+      { _id: lecture._id, status: "draft", publishedAt: { $exists: false } },
+      { $inc: { __v: 1 } },
+      { session },
+    );
+    ensure(
+      lock.matchedCount === 1 &&
+        !(await LectureProgress.exists({ lectureId: lecture._id }).session(
+          session,
+        )),
+      409,
+      "ONLY_UNUSED_DRAFT_DELETION",
+    );
+    const current =
+      kind === "lectures"
+        ? await Lecture.findById(entityId).session(session)
+        : await Material.findById(entityId).session(session);
+    ensure(current, 404, "NOT_FOUND");
+    const materials =
+      kind === "lectures"
+        ? await Material.find({ lectureId: entityId }).session(session)
+        : [current];
+    for (const material of materials) {
+      removedFiles.push(material.url);
+      await bindFile(
+        user,
+        null,
+        material.url,
+        "material",
+        String(lecture._id),
+        session,
+      );
+    }
+    if (kind === "lectures") {
+      removedFiles.push(current.summaryUrl);
+      await bindFile(
+        user,
+        null,
+        current.summaryUrl,
+        "summary",
+        String(lecture.packageSubjectId),
+        session,
+      );
+    }
     if (kind === "lectures")
       await Material.deleteMany({ lectureId: entityId }).session(session);
-    await row.deleteOne({ session });
+    await current.deleteOne({ session });
     await audit(
       user.userId,
       "content.draft_deleted",
@@ -169,6 +251,7 @@ export async function deleteDraft(
       session,
     );
   });
+  for (const value of removedFiles) await cleanupFile(value);
 }
 export async function publishScheduled() {
   const due = await Lecture.find({

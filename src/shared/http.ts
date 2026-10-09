@@ -1,7 +1,6 @@
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { ZodError } from "zod";
 import { ApiError } from "./errors.js";
-import { MulterError } from "multer";
 export const endpoint =
   (fn: (req: Request, res: Response) => Promise<unknown>): RequestHandler =>
   async (req, res, next) => {
@@ -18,21 +17,6 @@ export function errors(
   res: Response,
   _next: NextFunction,
 ) {
-  if (error instanceof MulterError) {
-    res.status(400).json({
-      error: {
-        code:
-          error.code === "LIMIT_FILE_SIZE"
-            ? _req.path.endsWith("/summary-pdf")
-              ? "summaryPdfHelp"
-              : "IMAGE_TOO_LARGE"
-            : _req.path.endsWith("/summary-pdf")
-              ? "INVALID_SUMMARY_PDF"
-              : "INVALID_RECEIPT_IMAGE",
-      },
-    });
-    return;
-  }
   if (error instanceof ApiError) {
     res
       .status(error.status)

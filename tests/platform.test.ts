@@ -2,9 +2,6 @@ import { beforeAll, afterAll, describe, it, expect } from "vitest";
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 import request from "supertest";
-import { unlink } from "node:fs/promises";
-import path from "node:path";
-import { summaryDirectory } from "../src/shared/summary-files.js";
 import { env } from "../src/config/env.js";
 import { app } from "../src/app.js";
 import {
@@ -137,84 +134,9 @@ describe("Platform rules against real MongoDB", () => {
       }),
     ).toBe(8);
   });
-  it("uploads and serves a 20 MB PDF and rejects files above the limit", async () => {
-    const pdf = Buffer.alloc(20 * 1024 * 1024, 32);
-    pdf.write("%PDF-1.4\n");
-    const upload = await admin
-      .post("/api/v1/staff/summary-pdf")
-      .attach("pdf", pdf, {
-        filename: "summary.pdf",
-        contentType: "application/pdf",
-      })
-      .expect(200);
-    const url = upload.body.data as string;
-    expect(url).toMatch(/^\/api\/v1\/summary-pdfs\//);
-    try {
-      const download = await admin.get(url).expect(200);
-      expect(download.body.length).toBe(pdf.length);
-      await request(app).get(url).expect(401);
-      const oversized = Buffer.concat([pdf, Buffer.from(" ")]);
-      const rejected = await admin
-        .post("/api/v1/staff/summary-pdf")
-        .attach("pdf", oversized, {
-          filename: "large.pdf",
-          contentType: "application/pdf",
-        })
-        .expect(400);
-      expect(rejected.body.error.code).toBe("summaryPdfHelp");
-      await admin
-        .post("/api/v1/staff/summary-pdf")
-        .attach("pdf", Buffer.from("fake pdf"), {
-          filename: "fake.pdf",
-          contentType: "application/pdf",
-        })
-        .expect(400);
-    } finally {
-      await unlink(path.join(summaryDirectory, path.basename(url)));
-    }
-  }, 60000);
-  it("uploads a receipt with Multer, stores Base64 and returns it to the admin", async () => {
-    const image = Buffer.from(
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jD1sAAAAASUVORK5CYII=",
-      "base64",
-    );
-    const upload = await admin
-      .post("/api/v1/staff/receipt-image")
-      .attach("image", image, {
-        filename: "receipt.png",
-        contentType: "image/png",
-      })
-      .expect(200);
-    expect(upload.body.data).toBe(
-      `data:image/png;base64,${image.toString("base64")}`,
-    );
-    const expense = await create("/staff/expenses", {
-      category: "Receipt test",
-      amount: 100,
-      date: new Date().toISOString(),
-      receiptImage: upload.body.data,
-    });
-    const finance = await admin.get("/api/v1/staff/finance").expect(200);
-    expect(
-      finance.body.data.expenses.find(
-        (item: { _id: string }) => item._id === expense._id,
-      ).receiptImage,
-    ).toBe(upload.body.data);
-    await admin
-      .post("/api/v1/staff/receipt-image")
-      .attach("image", Buffer.from("fake image"), {
-        filename: "bad.png",
-        contentType: "image/png",
-      })
-      .expect(400);
-    await admin
-      .post("/api/v1/staff/receipt-image")
-      .attach("image", Buffer.alloc(2 * 1024 * 1024 + 1), {
-        filename: "large.png",
-        contentType: "image/png",
-      })
-      .expect(400);
-    await admin.delete(`/api/v1/staff/expenses/${expense._id}`).expect(200);
+  it("rejects legacy multipart uploads instead of writing local files or Base64", async () => {
+    await admin.post("/api/v1/staff/summary-pdf").expect(400);
+    await admin.post("/api/v1/staff/receipt-image").expect(400);
   });
   it("expands a college year count without duplicates or deleting existing years", async () => {
     const college = await create("/admin/academics/colleges", {

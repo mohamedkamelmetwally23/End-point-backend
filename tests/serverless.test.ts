@@ -8,7 +8,6 @@ vi.mock("../src/shared/database.js", async (importOriginal) => {
   return { ...actual, connect: vi.fn().mockResolvedValue(undefined) };
 });
 import { connect } from "../src/shared/database.js";
-import { requireSummaryStorage } from "../src/shared/summary-files.js";
 beforeEach(() => {
   vi.stubEnv("VERCEL", "1");
   vi.mocked(connect)
@@ -68,14 +67,4 @@ it("returns a clean 503 if MongoDB cannot connect", async () => {
   await request(await serverlessApp())
     .get("/api/v1/auth/me")
     .expect(503, { error: { code: "DATABASE_UNAVAILABLE" } });
-});
-it("reports the Vercel persistent PDF storage blocker explicitly", () => {
-  vi.stubEnv("VERCEL", "1");
-  try {
-    expect(() => requireSummaryStorage()).toThrow(
-      "PDF_STORAGE_UNAVAILABLE_ON_VERCEL",
-    );
-  } finally {
-    vi.unstubAllEnvs();
-  }
 });

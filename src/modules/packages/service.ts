@@ -14,6 +14,7 @@ import { placement, activeTerm } from "../academics/service.js";
 import { ensure } from "../../shared/errors.js";
 import { transaction } from "../../shared/database.js";
 import { audit } from "../audit/service.js";
+import { bindFile, cleanupFile } from "../../storage/storage.service.js";
 import {
   assignedSubjects,
   contentPermission,
@@ -75,7 +76,8 @@ export async function savePackage(
     400,
     "INVALID_TERM",
   );
-  return transaction(async (session) => {
+  let previousFile: unknown;
+  const result = await transaction(async (session) => {
     if (subjectIds) {
       const matching = await Subject.countDocuments({
         _id: { $in: subjectIds },
@@ -97,6 +99,16 @@ export async function savePackage(
           409,
           "PARENT_IMMUTABLE",
         );
+    previousFile = existing?.coverUrl;
+    if (packageData.coverUrl !== undefined)
+      await bindFile(
+        { userId: String(actor), role: "super_admin" },
+        packageData.coverUrl,
+        previousFile,
+        "cover",
+        undefined,
+        session,
+      );
     const record = existing
       ? await existing.set(packageData).save({ session })
       : (await Package.create([packageData], { session }))[0]!;
@@ -124,6 +136,12 @@ export async function savePackage(
     );
     return record;
   });
+  if (
+    packageData.coverUrl !== undefined &&
+    previousFile !== packageData.coverUrl
+  )
+    await cleanupFile(previousFile);
+  return result;
 }
 export async function addSubject(
   actor: unknown,

@@ -4,6 +4,7 @@ import type { Principal } from "../staff-assignments/service.js";
 import { ensure } from "../../shared/errors.js";
 import { audit } from "../audit/service.js";
 import { transaction } from "../../shared/database.js";
+import { bindFile, cleanupFile } from "../../storage/storage.service.js";
 export async function finance(user: Principal) {
   const expenses = await Expense.find(
     user.role === "super_admin" ? {} : { createdBy: user.userId },
@@ -67,7 +68,9 @@ export async function saveExpense(
   entityId?: string,
 ) {
   const data = expenseSchema.parse(body);
-  return transaction(async (session) => {
+  let previousFile: unknown;
+  let previousReceiptUrl: unknown;
+  const result = await transaction(async (session) => {
     const row = entityId
       ? await Expense.findById(entityId).session(session)
       : null;
@@ -77,6 +80,26 @@ export async function saveExpense(
         user.role === "super_admin" || String(row.createdBy) === user.userId,
         403,
         "FORBIDDEN",
+      );
+    previousFile = row?.receiptImage;
+    previousReceiptUrl = row?.receiptUrl;
+    if (data.receiptUrl !== undefined)
+      await bindFile(
+        user,
+        data.receiptUrl,
+        previousReceiptUrl,
+        "receipt",
+        undefined,
+        session,
+      );
+    if (data.receiptImage !== undefined)
+      await bindFile(
+        user,
+        data.receiptImage,
+        previousFile,
+        "receipt",
+        undefined,
+        session,
       );
     const record = row
       ? await row.set(data).save({ session })
@@ -95,8 +118,15 @@ export async function saveExpense(
     );
     return record;
   });
+  if (data.receiptImage !== undefined && previousFile !== data.receiptImage)
+    await cleanupFile(previousFile);
+  if (data.receiptUrl !== undefined && previousReceiptUrl !== data.receiptUrl)
+    await cleanupFile(previousReceiptUrl);
+  return result;
 }
 export async function deleteExpense(user: Principal, entityId: string) {
+  let previousFile: unknown;
+  let previousReceiptUrl: unknown;
   await transaction(async (session) => {
     const row = await Expense.findById(entityId).session(session);
     ensure(row, 404, "NOT_FOUND");
@@ -105,6 +135,17 @@ export async function deleteExpense(user: Principal, entityId: string) {
       403,
       "FORBIDDEN",
     );
+    previousFile = row.receiptImage;
+    previousReceiptUrl = row.receiptUrl;
+    await bindFile(
+      user,
+      null,
+      previousReceiptUrl,
+      "receipt",
+      undefined,
+      session,
+    );
+    await bindFile(user, null, previousFile, "receipt", undefined, session);
     await row.deleteOne({ session });
     await audit(
       user.userId,
@@ -115,4 +156,6 @@ export async function deleteExpense(user: Principal, entityId: string) {
       session,
     );
   });
+  await cleanupFile(previousFile);
+  await cleanupFile(previousReceiptUrl);
 }

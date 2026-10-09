@@ -58,7 +58,8 @@ function model(
       if (
         type !== "text" &&
         typeof value === "string" &&
-        !value.startsWith("https://")
+        !value.startsWith("https://") &&
+        !/^\/api\/v1\/files\/[a-f\d]{24}\.(pdf|png|jpg|webp)$/.test(value)
       )
         this.invalidate("url", "HTTPS required");
     }
