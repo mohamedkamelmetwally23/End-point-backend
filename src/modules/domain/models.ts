@@ -264,6 +264,7 @@ export const Order = model(
     status: status(["pending", "completed", "cancelled"], "pending"),
     completedAt: Date,
     completedBy: ref("users", false),
+    receiptImage: String,
   },
   [
     [

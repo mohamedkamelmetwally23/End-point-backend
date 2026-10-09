@@ -5,7 +5,8 @@ import type { Principal } from "../staff-assignments/service.js";
 import { transaction } from "../../shared/database.js";
 import { audit } from "../audit/service.js";
 import { ensure } from "../../shared/errors.js";
-export async function buy(user: Principal, packageId: string) {
+import { bindFile } from "../../storage/storage.service.js";
+export async function buy(user: Principal, packageId: string, receiptImage?: string) {
   const pkg = await studentPackage(user, packageId, false);
   ensure(!pkg.isFree, 400, "PACKAGE_IS_FREE");
   ensure(
@@ -31,6 +32,11 @@ export async function buy(user: Principal, packageId: string) {
         )
       )[0]!;
       await audit(user.userId, "order.created", "orders", row._id, {}, session);
+    }
+    if (receiptImage) {
+      await bindFile(user, receiptImage, row.receiptImage, "receipt", undefined, session);
+      row.receiptImage = receiptImage;
+      await row.save({ session });
     }
     return row;
   });

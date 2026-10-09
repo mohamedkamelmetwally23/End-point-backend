@@ -152,7 +152,10 @@ student.post(
 );
 student.post(
   "/packages/:id/buy",
-  endpoint((req) => orders.buy(req.principal, param(req.params.id))),
+  endpoint((req) => {
+    const data = z.object({ receiptImage: z.string().regex(/^\/api\/v1\/files\/[a-f\d]{24}\.(?:png|jpg|webp)$/).optional() }).parse(req.body || {});
+    return orders.buy(req.principal, param(req.params.id), data.receiptImage);
+  }),
 );
 student.get(
   "/lectures/:id",
