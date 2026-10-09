@@ -1,5 +1,4 @@
 import { Order, PackageAccess } from "../domain/models.js";
-import { env } from "../../config/env.js";
 import { studentPackage } from "../packages/service.js";
 import { grant } from "../access/service.js";
 import type { Principal } from "../staff-assignments/service.js";
@@ -7,7 +6,6 @@ import { transaction } from "../../shared/database.js";
 import { audit } from "../audit/service.js";
 import { ensure } from "../../shared/errors.js";
 export async function buy(user: Principal, packageId: string) {
-  ensure(env.WHATSAPP_NUMBER, 503, "PURCHASE_CONTACT_UNCONFIGURED");
   const pkg = await studentPackage(user, packageId, false);
   ensure(!pkg.isFree, 400, "PACKAGE_IS_FREE");
   ensure(
@@ -38,7 +36,6 @@ export async function buy(user: Principal, packageId: string) {
   });
   return {
     order,
-    whatsappUrl: `https://wa.me/${env.WHATSAPP_NUMBER}?text=${encodeURIComponent(`Endpoint — ${pkg.name} — Order ${order._id}`)}`,
   };
 }
 export async function resolveOrder(

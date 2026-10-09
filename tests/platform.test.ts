@@ -605,13 +605,15 @@ describe("Platform rules against real MongoDB", () => {
   });
   it("handles pending paid orders with snapshot and atomic completion/access/audit", async () => {
     const prior = env.WHATSAPP_NUMBER;
-    env.WHATSAPP_NUMBER = "201234567890";
+    delete env.WHATSAPP_NUMBER;
     try {
       const response = await student
         .post(`/api/v1/student/packages/${paidId}/buy`)
         .expect(200);
       orderId = response.body.data.order._id;
-      expect(response.body.data.whatsappUrl).toContain("https://wa.me/");
+      expect(response.body.data.whatsappUrl).toBeUndefined();
+      expect(response.body.data.order.status).toBe("pending");
+      expect(await PackageAccess.exists({ studentId, packageId: paidId, status: "active" })).toBeNull();
       await student.post(`/api/v1/student/packages/${paidId}/buy`).expect(200);
       expect(
         await Order.countDocuments({
