@@ -1,3 +1,4 @@
+import { loadReceipt, receiptReference } from "../src/shared/receipts.js";
 import { beforeAll, afterAll, describe, it, expect, vi } from "vitest";
 import mongoose from "mongoose";
 import request from "supertest";
@@ -80,7 +81,7 @@ import {
   saveLecture,
   deleteDraft,
 } from "../src/modules/content/service.js";
-import { saveExpense, deleteExpense } from "../src/modules/finance/service.js";
+import { finance, saveExpense, deleteExpense } from "../src/modules/finance/service.js";
 import { transaction } from "../src/shared/database.js";
 import { confirmedTestDatabase } from "../scripts/database-tools.js";
 import {
@@ -267,6 +268,15 @@ describe("Blob storage with real MongoDB and mocked external Blob transport", ()
     for (const owner of [manager, lecturer]) {
       const expense = await saveExpense(owner, fields);
       expect(expense.receiptImage).toBe(receiptImage);
+      const list = await finance(owner);
+      expect(JSON.stringify(list)).not.toContain("data:image/");
+      expect(list.expenses.find(row => String(row._id) === String(expense._id))?.receiptImage)
+        .toBe(receiptReference(expense._id, "expenses"));
+      expect((await loadReceipt(owner, "expenses", String(expense._id))).bytes).toEqual(png);
+      await expect(loadReceipt(owner === manager ? lecturer : manager, "expenses", String(expense._id))).rejects.toThrow("FORBIDDEN");
+      await expect(loadReceipt(student, "orders", String(expense._id))).rejects.toThrow("FORBIDDEN");
+      await saveExpense(owner, { category: "Kept", amount: 200, date: fields.date }, String(expense._id));
+      expect((await loadReceipt(owner, "expenses", String(expense._id))).bytes).toEqual(png);
       await expect(saveExpense(student, fields, String(expense._id))).rejects.toThrow("FORBIDDEN");
       await saveExpense(owner, { ...fields, receiptImage: null }, String(expense._id));
       await saveExpense(owner, fields, String(expense._id));

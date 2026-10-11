@@ -1,3 +1,4 @@
+import { dto } from "../../shared/dto.js";
 import type { ClientSession } from "mongoose";
 import {
   PackageAccess,
@@ -31,7 +32,7 @@ export async function grant(
   const current = await PackageAccess.findOne({ studentId, packageId }).session(
     session,
   );
-  if (current?.status === "active") return current;
+  if (current?.status === "active") return dto(current, "_id packageId status");
   const access = await PackageAccess.findOneAndUpdate(
     { studentId, packageId },
     {
@@ -53,7 +54,7 @@ export async function grant(
     { source },
     session,
   );
-  return access;
+  return dto(access, "_id packageId status");
 }
 export async function claim(user: Principal, packageId: string) {
   const pkg = await studentPackage(user, packageId, false);
@@ -84,7 +85,7 @@ export async function manualAccess(
       {},
       session,
     );
-    return row;
+    return dto(row, "_id packageId status");
   });
 }
 export async function resetDevice(actor: unknown, studentId: string) {

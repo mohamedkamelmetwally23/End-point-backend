@@ -6,6 +6,7 @@ import { env } from "./config/env.js";
 import { router } from "./modules/api/routes.js";
 import { errors } from "./shared/http.js";
 import { connect } from "./shared/database.js";
+import { publishDueLectures } from "./modules/content/cron.js";
 export const app = express();
 app.disable("x-powered-by");
 // Normalize Helmet's CJS/ESM default export for Vercel's TypeScript bundler.
@@ -14,6 +15,8 @@ const helmet: (options?: HelmetOptions) => express.RequestHandler =
 app.use(helmet());
 app.use(cors({ origin: env.FRONTEND_URL, credentials: true }));
 app.get("/health", (_req, res) => res.json({ ok: true }));
+// Authenticate before database access; this is the same app Vercel imports.
+app.all("/api/internal/publish-due-lectures", publishDueLectures);
 app.use(express.json({ limit: "3mb" }));
 app.use(cookieParser(env.COOKIE_SECRET));
 app.use((req, res, next) => {

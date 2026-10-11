@@ -25,9 +25,9 @@ export async function authenticate(
     const session = await Session.findOne({
       tokenHash: hash(token),
       expiresAt: { $gt: new Date() },
-    });
+    }).select("userId").lean();
     ensure(session, 401, "UNAUTHENTICATED");
-    const user = await User.findOne({ _id: session.userId, status: "active" });
+    const user = await User.findOne({ _id: session.userId, status: "active" }).select("_id role collegeId academicYearId").lean();
     ensure(user, 401, "UNAUTHENTICATED");
     if (user.role === "student") {
       const device = req.signedCookies.device;

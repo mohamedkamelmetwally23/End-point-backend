@@ -1,21 +1,22 @@
+import { dto, fields } from "../../shared/dto.js";
 import {
   LectureProgress,
   Lecture,
   PackageSubject,
   PackageAccess,
 } from "../domain/models.js";
-import { lectureDetail } from "../packages/service.js";
+import { accessibleLecture } from "../packages/service.js";
 import type { Principal } from "../staff-assignments/service.js";
 import { audit } from "../audit/service.js";
 import { transaction } from "../../shared/database.js";
 export async function completeLecture(user: Principal, lectureId: string) {
-  const detail = await lectureDetail(user, lectureId);
+  const detail = await accessibleLecture(user, lectureId);
   return transaction(async (session) => {
     const existing = await LectureProgress.findOne({
       studentId: user.userId,
       lectureId,
     }).session(session);
-    if (existing) return existing;
+    if (existing) return dto(existing, "_id lectureId completedAt");
     const record = (
       await LectureProgress.create(
         [
@@ -38,18 +39,19 @@ export async function completeLecture(user: Principal, lectureId: string) {
       {},
       session,
     );
-    return record;
+    return dto(record, "_id lectureId completedAt");
   });
 }
 export async function timeline(user: Principal, from: string, to: string) {
   const access = await PackageAccess.find({
     studentId: user.userId,
     status: "active",
-  }).lean();
+  }).select("packageId").lean();
   const subjects = await PackageSubject.find({
     packageId: { $in: access.map((a) => a.packageId) },
     status: "active",
   })
+    .select(fields.subject)
     .populate("subjectId", "name status")
     .populate("packageId", "name")
     .lean();
@@ -62,10 +64,15 @@ export async function timeline(user: Principal, from: string, to: string) {
     status: "published",
     publishedAt: { $gte: new Date(from), $lt: new Date(to), $lte: new Date() },
   })
+    .select("_id packageSubjectId title publishedAt")
     .sort({ publishedAt: 1 })
     .lean();
-  return lectures.map((l) => ({
-    ...l,
-    context: subjects.find((s) => String(s._id) === String(l.packageSubjectId)),
-  }));
+  const contexts = new Map(subjects.map(s => [String(s._id), s]));
+  return lectures.map(l => {
+    const subject = contexts.get(String(l.packageSubjectId));
+    return {
+      _id: l._id, packageSubjectId: l.packageSubjectId, title: l.title, publishedAt: l.publishedAt,
+      context: subject ? { subjectId: { name: subject.subjectId?.name }, packageId: { name: subject.packageId?.name } } : undefined,
+    };
+  });
 }

@@ -1,3 +1,5 @@
+import { pageQuery, pageResult } from "../../shared/pagination.js";
+import { dto, fields } from "../../shared/dto.js";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
 import {
@@ -31,7 +33,7 @@ export async function createStaff(actor: unknown, body: unknown) {
       )
     )[0]!;
     await audit(actor, "user.created", "users", user._id, {}, session);
-    return User.findById(user._id).session(session).lean();
+    return User.findById(user._id).select(fields.user).session(session).lean();
   });
 }
 export async function updateUser(
@@ -75,16 +77,18 @@ export async function updateUser(
       {},
       session,
     );
-    return user;
+    return dto(user, fields.user);
   });
 }
-export async function lecturerStudents(user: Principal) {
+export async function lecturerStudents(user: Principal, query: unknown = {}) {
+  const { page, limit } = pageQuery.parse(query);
   const subjects = await assignedSubjects(user),
     packageIds = subjects.map((s) => s.packageId);
-  const accesses = await PackageAccess.find({
-    packageId: { $in: packageIds },
-    status: "active",
-  })
+  const accessFilter = { packageId: { $in: packageIds }, status: "active" };
+  const total = await PackageAccess.countDocuments(accessFilter);
+  const accesses = await PackageAccess.find(accessFilter)
+    .select("studentId packageId")
+    .sort({ _id: 1 }).skip((page - 1) * limit).limit(limit)
     .populate("studentId", "fullName email phone")
     .populate("packageId", "name")
     .lean();
@@ -92,45 +96,40 @@ export async function lecturerStudents(user: Principal) {
     packageSubjectId: { $in: subjects.map((s) => s._id) },
     status: "published",
     publishedAt: { $lte: new Date() },
-  }).lean();
+  }).select("_id packageSubjectId title").lean();
   const progress = await LectureProgress.find({
     studentId: { $in: accesses.map((a) => a.studentId?._id) },
     lectureId: { $in: lectures.map((l) => l._id) },
-  }).lean();
-  return accesses
-    .filter((a) => a.studentId)
-    .flatMap((a) =>
-      subjects
-        .filter((s) => String(s.packageId) === String(a.packageId?._id))
-        .map((s) => {
-          const relevant = lectures.filter(
-            (l) => String(l.packageSubjectId) === String(s._id),
-          );
-          const completed = progress.filter(
-            (p) =>
-              String(p.studentId) === String(a.studentId._id) &&
-              relevant.some((l) => String(l._id) === String(p.lectureId)),
-          );
-          return {
-            student: a.studentId,
-            package: a.packageId,
-            packageSubjectId: s._id,
-            completed: completed.length,
-            total: relevant.length,
-            lastActivity: completed
-              .map((p) => p.completedAt)
-              .sort()
-              .at(-1),
-            lectures: relevant.map((l) => ({
-              _id: l._id,
-              title: l.title,
-              completed: completed.some(
-                (p) => String(p.lectureId) === String(l._id),
-              ),
-            })),
-          };
-        }),
-    );
+  }).select("studentId lectureId completedAt").lean();
+  const lecturesBySubject = new Map<string, typeof lectures>();
+  for (const lecture of lectures) {
+    const key = String(lecture.packageSubjectId);
+    const rows = lecturesBySubject.get(key) ?? [];
+    rows.push(lecture); lecturesBySubject.set(key, rows);
+  }
+  const progressByStudent = new Map<string, Map<string, typeof progress[number]>>();
+  for (const item of progress) {
+    const key = String(item.studentId);
+    const rows = progressByStudent.get(key) ?? new Map();
+    rows.set(String(item.lectureId), item); progressByStudent.set(key, rows);
+  }
+  const rows = accesses.filter(a => a.studentId).flatMap(a =>
+    subjects.filter(s => String(s.packageId) === String(a.packageId?._id)).map(s => {
+      const relevant = lecturesBySubject.get(String(s._id)) ?? [];
+      const completedByLecture = progressByStudent.get(String(a.studentId._id));
+      const completed = relevant.flatMap(l => {
+        const item = completedByLecture?.get(String(l._id));
+        return item ? [item] : [];
+      });
+      return {
+        student: a.studentId, package: a.packageId, packageSubjectId: s._id,
+        completed: completed.length, total: relevant.length,
+        lastActivity: completed.map(p => p.completedAt).sort().at(-1),
+        lectures: relevant.map(l => ({ _id: l._id, title: l.title, completed: completedByLecture?.has(String(l._id)) ?? false })),
+      };
+    }));
+  // A page contains enrollments; each enrollment can have several subject rows.
+  return pageResult(rows, total, page, limit);
 }
 export async function dashboard(user: Principal) {
   if (user.role === "super_admin") {
@@ -150,8 +149,8 @@ export async function dashboard(user: Principal) {
       Package.countDocuments({ status: "active" }),
       Order.countDocuments({ status: "pending" }),
       Order.countDocuments({ status: "completed" }),
-      finance(user),
-      AuditLog.find()
+      finance(user, {}, true),
+      AuditLog.find().select(fields.audit)
         .sort({ timestamp: -1 })
         .limit(8)
         .populate("actor", "fullName")
@@ -170,7 +169,7 @@ export async function dashboard(user: Principal) {
         netProfit: accounts.netProfit,
       },
       activity,
-      accounts,
+      accounts: { monthlyExpenses: accounts.monthlyExpenses, monthlyRevenue: accounts.monthlyRevenue },
     };
   }
   const subjects = await assignedSubjects(user);
@@ -206,7 +205,7 @@ export async function dashboard(user: Principal) {
       publishedLectures,
       totalStudents: totalStudents.length,
     },
-    activity: await AuditLog.find({ actor: user.userId })
+    activity: await AuditLog.find({ actor: user.userId }).select(fields.audit)
       .sort({ timestamp: -1 })
       .limit(8)
       .lean(),
@@ -214,15 +213,28 @@ export async function dashboard(user: Principal) {
 }
 export async function studentInspection(userId: string) {
   const user = await User.findOne({ _id: userId, role: "student" })
+    .select(fields.user)
     .populate("collegeId", "name")
     .populate("academicYearId", "name")
     .lean();
   ensure(user, 404, "NOT_FOUND");
   return {
     user,
-    access: await PackageAccess.find({ studentId: userId })
+    access: await PackageAccess.find({ studentId: userId }).select("_id packageId status")
       .populate("packageId", "name")
       .lean(),
-    assignments: await StaffAssignment.find({ userId }).lean(),
+
   };
+}
+
+export async function listUsers(role: string, query: unknown) {
+  const { page, limit } = pageQuery.parse(query);
+  const filter = { role };
+  const [rows, total] = await Promise.all([
+    User.find(filter).select(fields.user).populate("collegeId", "name")
+      .populate("academicYearId", "name").sort({ createdAt: -1, _id: -1 })
+      .skip((page - 1) * limit).limit(limit).lean(),
+    User.countDocuments(filter),
+  ]);
+  return pageResult(rows, total, page, limit);
 }

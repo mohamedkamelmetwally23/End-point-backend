@@ -1,3 +1,4 @@
+import { dto, fields } from "../../shared/dto.js";
 import {
   StaffAssignment,
   PackageSubject,
@@ -95,6 +96,10 @@ export async function saveAssignment(actor: unknown, body: unknown) {
       {},
       session,
     );
-    return assignment;
+    return dto(assignment, fields.assignment);
   });
+}
+
+export function listAssignments() {
+  return StaffAssignment.find().select(fields.assignment).lean();
 }

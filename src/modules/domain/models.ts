@@ -92,7 +92,7 @@ export const User = model("users", {
   phone: { type: String, default: "" },
   collegeId: ref("colleges", false),
   academicYearId: ref("academic_years", false),
-});
+}, [[{ role: 1, createdAt: -1, _id: -1 }, {}]]);
 export const College = model("colleges", {
   name,
   // Keep generating an internal value for compatibility with the existing unique index.
@@ -189,6 +189,7 @@ export const StaffAssignment = model(
       { userId: 1, packageId: 1, scopeType: 1, packageSubjectId: 1 },
       { unique: true },
     ],
+    [{ userId: 1, active: 1, permissions: 1 }, {}],
   ],
 );
 export const Lecture = model(
@@ -272,6 +273,8 @@ export const Order = model(
       { unique: true, partialFilterExpression: { status: "pending" } },
     ],
     [{ status: 1, completedAt: 1 }, {}],
+    [{ status: 1, createdAt: -1, _id: -1 }, {}],
+    [{ studentId: 1, packageId: 1, createdAt: -1, _id: -1 }, {}],
   ],
 );
 export const LectureProgress = model(
@@ -302,7 +305,7 @@ export const Expense = model(
     receiptUrl: String,
     receiptImage: String,
   },
-  [[{ createdBy: 1, date: -1 }, {}]],
+  [[{ createdBy: 1, date: -1, _id: -1 }, {}], [{ date: -1, _id: -1 }, {}]],
 );
 export const AuditLog = model(
   "audit_logs",
@@ -314,7 +317,11 @@ export const AuditLog = model(
     metadata: Schema.Types.Mixed,
     timestamp: { type: Date, default: Date.now, immutable: true },
   },
-  [[{ timestamp: -1 }, {}]],
+  [
+    [{ timestamp: -1, _id: -1 }, {}],
+    [{ actor: 1, action: 1, timestamp: -1 }, {}],
+    [{ action: 1, timestamp: -1, _id: -1 }, {}],
+  ],
 );
 export const StudentDevice = model("student_devices", {
   studentId: { ...ref("users"), unique: true },

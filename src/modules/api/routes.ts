@@ -1,3 +1,4 @@
+import { loadReceipt, sendReceipt } from "../../shared/receipts.js";
 import { Router } from "express";
 import * as storage from "../../storage/storage.service.js";
 import { z } from "zod";
@@ -5,7 +6,6 @@ import { endpoint } from "../../shared/http.js";
 import { authenticate, authorize } from "../../middleware/auth.js";
 import { id, receiptImageSchema } from "../domain/validation.js";
 import { ensure } from "../../shared/errors.js";
-import { User, Order, AuditLog, StaffAssignment } from "../domain/models.js";
 import * as auth from "../auth/service.js";
 import * as academics from "../academics/service.js";
 import * as packages from "../packages/service.js";
@@ -15,9 +15,8 @@ import * as orders from "../orders/service.js";
 import * as progress from "../progress/service.js";
 import * as finance from "../finance/service.js";
 import * as users from "../users/service.js";
-import { saveAssignment } from "../staff-assignments/service.js";
-import { audit, frequentLoginsToday } from "../audit/service.js";
-import { transaction } from "../../shared/database.js";
+import { saveAssignment, listAssignments } from "../staff-assignments/service.js";
+import { frequentLoginsToday, listAudit } from "../audit/service.js";
 const param = (value: unknown) => id.parse(value);
 export const router = Router();
 router.get("/health", (_req, res) => res.json({ data: { status: "ok" } }));
@@ -92,39 +91,15 @@ router.post(
 );
 router.get(
   "/auth/me",
-  endpoint((req) => auth.profile(req.principal.userId)),
+  endpoint((req) => auth.bootstrap(req.principal.userId)),
 );
 router.post(
   "/auth/change-password",
   endpoint((req) => auth.changePassword(req.principal.userId, req.body)),
 );
-router.patch(
-  "/profile",
-  endpoint(async (req) => {
-    const data = z
-      .object({
-        fullName: z.string().trim().min(2).max(160),
-        phone: z.string().regex(/^\+?[\d\s()-]{8,25}$/),
-      })
-      .parse(req.body);
-    return transaction(async (session) => {
-      const user = await User.findByIdAndUpdate(
-        req.principal.userId,
-        { $set: data },
-        { new: true, runValidators: true, session },
-      );
-      await audit(
-        req.principal.userId,
-        "profile.updated",
-        "users",
-        req.principal.userId,
-        {},
-        session,
-      );
-      return user;
-    });
-  }),
-);
+router.get("/profile", endpoint((req) => auth.profile(req.principal.userId)));
+router.patch("/profile", endpoint(req => auth.updateProfile(req.principal.userId, req.body)));
+
 const student = Router();
 student.use(authorize("student"));
 student.get(
@@ -249,12 +224,15 @@ staff.delete(
 staff.get(
   "/students",
   authorize("lecturer", "super_admin"),
-  endpoint((req) => users.lecturerStudents(req.principal)),
+  endpoint((req) => users.lecturerStudents(req.principal, req.query)),
 );
 staff.get(
   "/finance",
-  endpoint((req) => finance.finance(req.principal)),
+  endpoint((req) => finance.finance(req.principal, req.query)),
 );
+staff.get("/expenses/:id/receipt", endpoint(async (req, res) => {
+  sendReceipt(res, await loadReceipt(req.principal, "expenses", param(req.params.id)));
+}));
 staff.post(
   "/expenses",
   endpoint((req) => finance.saveExpense(req.principal, req.body)),
@@ -319,12 +297,7 @@ admin.get(
     const role = z
       .enum(["student", "lecturer", "content_manager", "super_admin"])
       .parse(req.query.role);
-    return User.find({ role })
-      .populate("collegeId", "name")
-      .populate("academicYearId", "name")
-      .sort({ createdAt: -1 })
-      .limit(500)
-      .lean();
+    return users.listUsers(role, req.query);
   }),
 );
 admin.post(
@@ -363,7 +336,7 @@ admin.post(
 );
 admin.get(
   "/assignments",
-  endpoint(() => StaffAssignment.find().lean()),
+  endpoint(() => listAssignments()),
 );
 admin.post(
   "/assignments",
@@ -375,14 +348,12 @@ admin.get(
     const status = z
       .enum(["pending", "completed", "cancelled"])
       .parse(req.query.status || "pending");
-    return Order.find({ status })
-      .populate("studentId", "fullName email phone")
-      .populate("packageId", "name")
-      .sort({ createdAt: -1 })
-      .limit(500)
-      .lean();
+    return orders.listOrders(status, req.query);
   }),
 );
+admin.get("/orders/:id/receipt", endpoint(async (req, res) => {
+  sendReceipt(res, await loadReceipt(req.principal, "orders", param(req.params.id)));
+}));
 admin.post(
   "/orders/:id/complete",
   endpoint((req) =>
@@ -395,16 +366,7 @@ admin.post(
     orders.resolveOrder(req.principal.userId, param(req.params.id), false),
   ),
 );
-admin.get(
-  "/audit",
-  endpoint(() =>
-    AuditLog.find()
-      .sort({ timestamp: -1 })
-      .populate("actor", "fullName")
-      .limit(200)
-      .lean(),
-  ),
-);
+admin.get("/audit", endpoint((req) => listAudit(req.query)));
 admin.get("/audit/frequent-logins", endpoint(() => frequentLoginsToday()));
-admin.get("/audit/other-devices", endpoint(() => AuditLog.find({ action: { $in: ["auth.other_device", "auth.other_device_blocked"] } }).sort({ timestamp: -1 }).populate("actor", "fullName email").limit(200).lean()));
+admin.get("/audit/other-devices", endpoint((req) => listAudit(req.query, true)));
 router.use("/admin", admin);

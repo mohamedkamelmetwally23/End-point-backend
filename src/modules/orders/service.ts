@@ -1,3 +1,6 @@
+import { receiptPresence, receiptReference } from "../../shared/receipts.js";
+import { dto, fields } from "../../shared/dto.js";
+import { pageQuery, pageResult } from "../../shared/pagination.js";
 import { Order, PackageAccess } from "../domain/models.js";
 import { studentPackage } from "../packages/service.js";
 import { grant } from "../access/service.js";
@@ -43,7 +46,7 @@ export async function buy(user: Principal, packageId: string, receiptImage?: str
     return row;
   });
   return {
-    order,
+    order: dto(order, fields.order),
   };
 }
 export async function resolveOrder(
@@ -54,7 +57,7 @@ export async function resolveOrder(
   return transaction(async (session) => {
     const order = await Order.findById(orderId).session(session);
     ensure(order, 404, "NOT_FOUND");
-    if (order.status === "completed" && complete) return order;
+    if (order.status === "completed" && complete) return dto(order, fields.order);
     ensure(order.status === "pending", 409, "ORDER_NOT_PENDING");
     order.status = complete ? "completed" : "cancelled";
     if (complete) {
@@ -77,6 +80,19 @@ export async function resolveOrder(
       {},
       session,
     );
-    return order;
+    return dto(order, fields.order);
   });
+}
+
+export async function listOrders(status: string, query: unknown) {
+  const { page, limit } = pageQuery.parse(query);
+  const filter = { status };
+  const [rows, total] = await Promise.all([
+    Order.find(filter).select({ ...Object.fromEntries(fields.order.split(" ").map(key => [key, 1])), receiptImage: receiptPresence }).populate("studentId", "fullName email phone")
+      .populate("packageId", "name").sort({ createdAt: -1, _id: -1 })
+      .skip((page - 1) * limit).limit(limit).lean(),
+    Order.countDocuments(filter),
+  ]);
+  for (const row of rows) row.receiptImage = row.receiptImage ? receiptReference(row._id, "orders") : undefined;
+  return pageResult(rows, total, page, limit);
 }

@@ -1,3 +1,4 @@
+import { dto, fields } from "../../shared/dto.js";
 import {
   Package,
   PackageSubject,
@@ -53,13 +54,10 @@ export async function studentPackage(
   return pkg;
 }
 export async function hasActiveSubjects(packageId: unknown) {
-  const ids = await Subject.find({ status: "active" }).distinct("_id");
-  return PackageSubject.exists({
-    packageId,
-    status: "active",
-    subjectId: { $in: ids },
-  });
+  const links = await PackageSubject.find({ packageId, status: "active" }).select("subjectId").lean();
+  return Subject.exists({ _id: { $in: links.map(link => link.subjectId) }, status: "active" });
 }
+
 export async function savePackage(
   actor: unknown,
   body: unknown,
@@ -119,13 +117,13 @@ export async function savePackage(
         { $set: { status: "archived" } },
         { session },
       );
-      for (const [order, subjectId] of subjectIds.entries()) {
-        await PackageSubject.findOneAndUpdate(
-          { packageId: record._id, subjectId },
-          { $set: { order, status: "active" } },
-          { upsert: true, new: true, runValidators: true, session },
-        );
-      }
+      if (subjectIds.length) await PackageSubject.bulkWrite(subjectIds.map((subjectId, order) => ({
+        updateOne: {
+          filter: { packageId: record._id, subjectId },
+          update: { $set: { order, status: "active" } },
+          upsert: true,
+        },
+      })), { session });
     }
     await audit(
       actor,
@@ -142,7 +140,7 @@ export async function savePackage(
     previousFile !== packageData.coverUrl
   )
     await cleanupFile(previousFile);
-  return result;
+  return dto(result, fields.package);
 }
 export async function addSubject(
   actor: unknown,
@@ -177,7 +175,7 @@ export async function addSubject(
       {},
       session,
     );
-    return row;
+    return dto(row, fields.subject);
   });
 }
 export async function listPackages(user: Principal, mode: string) {
@@ -186,7 +184,7 @@ export async function listPackages(user: Principal, mode: string) {
     const access = await PackageAccess.find({
       studentId: user.userId,
       status: "active",
-    }).lean();
+    }).select("packageId").lean();
     const owned = access.map((a) => a.packageId);
     if (mode === "explore") {
       const term = await activeTerm(user.collegeId, user.academicYearId);
@@ -208,43 +206,53 @@ export async function listPackages(user: Principal, mode: string) {
       .lean();
     filter = { _id: { $in: assignments.map((a) => a.packageId) } };
   }
-  const packages = await Package.find(filter).sort({ createdAt: -1 }).lean();
+  const packages = await Package.find(filter).select(fields.package).sort({ createdAt: -1 }).lean();
   const subjects = await PackageSubject.find({
     packageId: { $in: packages.map((p) => p._id) },
     status: "active",
   })
+    .select(fields.subject)
     .populate("subjectId", "name description status")
     .sort({ order: 1 })
     .lean();
+  const allowed = user.role !== "student" && user.role !== "super_admin"
+    ? new Set((await assignedSubjects(user)).map(s => String(s._id))) : null;
+  const visibleSubjects = subjects.filter(s =>
+    (user.role !== "student" || s.subjectId?.status === "active") &&
+    (!allowed || allowed.has(String(s._id))));
+  const subjectsByPackage = new Map<string, typeof subjects>();
+  for (const subject of visibleSubjects) {
+    const key = String(subject.packageId);
+    const group = subjectsByPackage.get(key) ?? [];
+    group.push(subject);
+    subjectsByPackage.set(key, group);
+  }
+  const learning = user.role === "student" && mode !== "explore";
+  const lectures = learning ? await Lecture.find({
+    packageSubjectId: { $in: visibleSubjects.map(s => s._id) },
+    status: "published", publishedAt: { $lte: new Date() },
+  }).select("_id packageSubjectId").lean() : [];
+  const completed = learning ? await LectureProgress.find({
+    studentId: user.userId, lectureId: { $in: lectures.map(l => l._id) },
+  }).select("lectureId").lean() : [];
+  const completedIds = new Set(completed.map(p => String(p.lectureId)));
+  const counts = new Map<string, { completed: number; total: number }>();
+  for (const lecture of lectures) {
+    const key = String(lecture.packageSubjectId);
+    const count = counts.get(key) ?? { completed: 0, total: 0 };
+    count.total++;
+    if (completedIds.has(String(lecture._id))) count.completed++;
+    counts.set(key, count);
+  }
   const result = [];
   for (const pkg of packages) {
-    let ps = subjects.filter((s) => String(s.packageId) === String(pkg._id));
-    if (user.role === "student") {
-      ps = ps.filter((s) => s.subjectId?.status === "active");
-      if (mode === "explore" && ps.length === 0) continue;
-    }
-    if (user.role !== "student" && user.role !== "super_admin") {
-      const allowed = await assignedSubjects(user);
-      ps = ps.filter((s) =>
-        allowed.some((a) => String(a._id) === String(s._id)),
-      );
-    }
-    let progress: unknown = undefined;
-    if (user.role === "student" && mode !== "explore") {
-      const lectures = await Lecture.find({
-        packageSubjectId: { $in: ps.map((s) => s._id) },
-        status: "published",
-        publishedAt: { $lte: new Date() },
-      })
-        .select("_id")
-        .lean();
-      const completed = await LectureProgress.countDocuments({
-        studentId: user.userId,
-        lectureId: { $in: lectures.map((l) => l._id) },
-      });
-      progress = { completed, total: lectures.length };
-    }
-    result.push({ ...pkg, subjects: ps, progress });
+    const ps = subjectsByPackage.get(String(pkg._id)) ?? [];
+    if (user.role === "student" && mode === "explore" && !ps.length) continue;
+    const progress = learning ? ps.reduce((sum, subject) => {
+      const count = counts.get(String(subject._id));
+      return { completed: sum.completed + (count?.completed ?? 0), total: sum.total + (count?.total ?? 0) };
+    }, { completed: 0, total: 0 }) : undefined;
+    result.push({ ...dto(pkg, fields.package), subjects: ps.map(s => dto(s, fields.subject)), progress });
   }
   return result;
 }
@@ -266,6 +274,7 @@ export async function packageDetail(
     packageId,
     ...(user.role === "student" ? { status: "active" } : {}),
   })
+    .select(fields.subject)
     .populate("subjectId", "name description status")
     .sort({ order: 1 })
     .lean();
@@ -297,21 +306,22 @@ export async function packageDetail(
   };
   const lectures = preview
     ? []
-    : await Lecture.find(lectureFilter).sort({ order: 1 }).lean();
+    : await Lecture.find(lectureFilter).select(fields.lecture).sort({ order: 1 }).lean();
   const progress =
     user.role === "student" && !preview
       ? await LectureProgress.find({
           studentId: user.userId,
           lectureId: { $in: lectures.map((l) => l._id) },
-        }).lean()
+        }).select("lectureId").lean()
       : [];
   const assignments = await StaffAssignment.find({ packageId, active: true })
     .populate("userId", "fullName role")
     .lean();
+  const completedIds = new Set(progress.map(p => String(p.lectureId)));
   return {
-    package: pkg,
+    package: dto(pkg, fields.package),
     subjects: subjects.map((s) => ({
-      ...s,
+      ...dto(s, fields.subject),
       lecturers: assignments
         .filter(
           (a) =>
@@ -323,8 +333,8 @@ export async function packageDetail(
         .map((a) => a.userId),
     })),
     lectures: lectures.map((l) => ({
-      ...l,
-      completed: progress.some((p) => String(p.lectureId) === String(l._id)),
+      ...dto(l, fields.lecture),
+      completed: completedIds.has(String(l._id)),
     })),
     orderStatus: latestOrder?.status ?? null,
     permissions:
@@ -346,7 +356,7 @@ export async function packageDetail(
             })),
   };
 }
-export async function lectureDetail(user: Principal, lectureId: string) {
+export async function accessibleLecture(user: Principal, lectureId: string) {
   const lecture = await Lecture.findById(lectureId);
   ensure(lecture, 404, "NOT_FOUND");
   const subject = await PackageSubject.findById(
@@ -371,11 +381,15 @@ export async function lectureDetail(user: Principal, lectureId: string) {
       subject._id,
       "content:view",
     );
+  return { lecture, subject };
+}
+export async function lectureDetail(user: Principal, lectureId: string) {
+  const { lecture, subject } = await accessibleLecture(user, lectureId);
   return {
-    lecture,
-    subject,
-    package: await Package.findById(subject.packageId).select("name"),
-    materials: await Material.find({ lectureId }).sort({ order: 1 }).lean(),
+    lecture: dto(lecture, fields.lecture),
+    subject: dto(subject, fields.subject),
+    package: await Package.findById(subject.packageId).select("name").lean(),
+    materials: await Material.find({ lectureId }).select(fields.material).sort({ order: 1 }).lean(),
     completed: !!(await LectureProgress.exists({
       studentId: user.userId,
       lectureId,

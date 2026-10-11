@@ -1,3 +1,4 @@
+import { PageResult } from "./pagination.js";
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { ZodError } from "zod";
 import { ApiError } from "./errors.js";
@@ -6,7 +7,7 @@ export const endpoint =
   async (req, res, next) => {
     try {
       const data = await fn(req, res);
-      if (!res.headersSent) res.json({ data: data ?? null });
+      if (!res.headersSent) res.json(data instanceof PageResult ? data : { data: data ?? null });
     } catch (error) {
       next(error);
     }
@@ -51,6 +52,10 @@ export function errors(
     error.type === "entity.parse.failed"
   ) {
     res.status(400).json({ error: { code: "INVALID_JSON" } });
+    return;
+  }
+  if (error && typeof error === "object" && "type" in error && error.type === "entity.too.large") {
+    res.status(413).json({ error: { code: "PAYLOAD_TOO_LARGE", message: "Request body exceeds the allowed size" } });
     return;
   }
   console.error(

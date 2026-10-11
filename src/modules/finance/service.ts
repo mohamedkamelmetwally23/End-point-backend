@@ -1,3 +1,7 @@
+import { receiptPresence, receiptReference } from "../../shared/receipts.js";
+import mongoose from "mongoose";
+import { pageQuery } from "../../shared/pagination.js";
+import { dto } from "../../shared/dto.js";
 import { Expense, Order } from "../domain/models.js";
 import { expenseSchema } from "../domain/validation.js";
 import type { Principal } from "../staff-assignments/service.js";
@@ -5,15 +9,26 @@ import { ensure } from "../../shared/errors.js";
 import { audit } from "../audit/service.js";
 import { transaction } from "../../shared/database.js";
 import { bindFile, cleanupFile } from "../../storage/storage.service.js";
-export async function finance(user: Principal) {
-  const expenses = await Expense.find(
-    user.role === "super_admin" ? {} : { createdBy: user.userId },
-  )
-    .populate("createdBy", "fullName")
-    .sort({ date: -1 })
-    .lean();
-  const expenseTotal = expenses.reduce((n, e) => n + Number(e.amount), 0);
-  if (user.role !== "super_admin") return { expenses, expenseTotal };
+export async function finance(user: Principal, query: unknown = {}, summaryOnly = false) {
+  const { page, limit } = pageQuery.parse(query);
+  const filter = user.role === "super_admin" ? {} : { createdBy: user.userId };
+  const [expenses, totals] = await Promise.all([
+    summaryOnly ? [] : Expense.find(filter)
+      .select({ _id: 1, createdBy: 1, category: 1, amount: 1, currency: 1, date: 1, notes: 1, receiptUrl: 1, receiptImage: receiptPresence })
+      .populate("createdBy", "fullName").sort({ date: -1, _id: -1 })
+      .skip((page - 1) * limit).limit(limit).lean(),
+    Expense.aggregate([
+      { $match: user.role === "super_admin" ? {} : { createdBy: new mongoose.Types.ObjectId(user.userId) } },
+      { $group: { _id: null, amount: { $sum: "$amount" }, total: { $sum: 1 } } },
+    ]),
+  ]);
+  for (const expense of expenses) {
+    expense.receiptImage = expense.receiptImage ? receiptReference(expense._id, "expenses") : undefined;
+  }
+  const expenseTotal = Number(totals[0]?.amount ?? 0);
+  const total = Number(totals[0]?.total ?? 0);
+  const pagination = { page, limit, total, hasNext: page * limit < total };
+  if (user.role !== "super_admin") return { expenses, expenseTotal, pagination };
   const revenueRows = await Order.aggregate([
     { $match: { status: "completed" } },
     {
@@ -25,6 +40,13 @@ export async function finance(user: Principal) {
     { $sort: { _id: 1 } },
   ]);
   const revenue = revenueRows.reduce((n, e) => n + Number(e.amount), 0);
+  if (summaryOnly) {
+    const monthlyExpenses = await Expense.aggregate([
+      { $group: { _id: { $dateToString: { format: "%Y-%m", date: "$date" } }, amount: { $sum: "$amount" } } },
+      { $sort: { _id: 1 } },
+    ]);
+    return { expenses, pagination, expenseTotal, revenue, netProfit: revenue - expenseTotal, monthlyExpenses, monthlyRevenue: revenueRows };
+  }
   const byCategory = await Expense.aggregate([
     { $group: { _id: "$category", amount: { $sum: "$amount" } } },
   ]);
@@ -36,6 +58,7 @@ export async function finance(user: Principal) {
         localField: "_id",
         foreignField: "_id",
         as: "person",
+        pipeline: [{ $project: { fullName: 1 } }],
       },
     },
     {
@@ -53,6 +76,7 @@ export async function finance(user: Principal) {
   ]);
   return {
     expenses,
+    pagination,
     expenseTotal,
     revenue,
     netProfit: revenue - expenseTotal,
@@ -116,7 +140,7 @@ export async function saveExpense(
       {},
       session,
     );
-    return record;
+    return dto(record, "_id category amount currency date notes receiptUrl receiptImage");
   });
   if (data.receiptImage !== undefined && previousFile !== data.receiptImage)
     if (!(typeof previousFile === "string" && previousFile.startsWith("data:image/"))) await cleanupFile(previousFile);

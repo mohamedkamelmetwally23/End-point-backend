@@ -1,3 +1,4 @@
+import { dto, fields } from "../../shared/dto.js";
 import crypto from "node:crypto";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
@@ -121,7 +122,7 @@ export async function login(req: Request, res: Response) {
     ...cookieOptions,
     maxAge: 7 * 86400000,
   });
-  return profile(user._id);
+  return bootstrap(user._id);
 }
 export async function logout(req: Request, res: Response) {
   if (typeof req.signedCookies.session === "string")
@@ -129,17 +130,17 @@ export async function logout(req: Request, res: Response) {
   res.clearCookie("session", cookieOptions);
 }
 export async function profile(userId: unknown) {
-  const user = await User.findById(userId).lean();
+  const user = await User.findById(userId).select(fields.user).lean();
   ensure(user, 401, "UNAUTHENTICATED");
-  if (user.role !== "student") return { user };
+  if (user.role !== "student") return { user: dto(user, fields.user) };
   const term = await activeTerm(user.collegeId, user.academicYearId).catch(
     () => null,
   );
   return {
-    user,
-    activeTerm: term,
+    user: dto(user, fields.user),
+    activeTerm: dto(term, "_id name academicYearId status order localOrder"),
     device: await StudentDevice.findOne({ studentId: userId })
-      .select("registeredAt")
+      .select("registeredAt -_id")
       .lean(),
   };
 }
@@ -164,5 +165,23 @@ export async function changePassword(userId: unknown, body: unknown) {
     await user.save({ session });
     await Session.deleteMany({ userId }).session(session);
     await audit(userId, "auth.password_changed", "users", userId, {}, session);
+  });
+}
+
+export async function bootstrap(userId: unknown) {
+  const user = await User.findById(userId).select("_id fullName role").lean();
+  ensure(user, 401, "UNAUTHENTICATED");
+  return { user: dto(user, "_id fullName role") };
+}
+
+export async function updateProfile(userId: string, body: unknown) {
+  const data = z.object({
+    fullName: z.string().trim().min(2).max(160),
+    phone: z.string().regex(/^\+?[\d\s()-]{8,25}$/),
+  }).parse(body);
+  return transaction(async session => {
+    const user = await User.findByIdAndUpdate(userId, { $set: data }, { new: true, runValidators: true, session });
+    await audit(userId, "profile.updated", "users", userId, {}, session);
+    return dto(user, fields.user);
   });
 }

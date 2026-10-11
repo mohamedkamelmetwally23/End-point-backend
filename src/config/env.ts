@@ -6,6 +6,7 @@ const parsed = z
       .enum(["development", "test", "production"])
       .default("development"),
     PORT: z.coerce.number().default(4000),
+    CRON_SECRET: z.string().min(32).optional(),
     MONGODB_URI: z.string().min(1),
     FRONTEND_URL: z.string().url().default("http://localhost:5173"),
     COOKIE_SECRET: z.string().min(32),

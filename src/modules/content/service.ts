@@ -1,8 +1,10 @@
+import { dto, fields as responseFields } from "../../shared/dto.js";
 import {
   Lecture,
   Material,
   PackageSubject,
   LectureProgress,
+  AuditLog,
 } from "../domain/models.js";
 import { lectureSchema, materialSchema } from "../domain/validation.js";
 import {
@@ -96,7 +98,7 @@ export async function saveLecture(
       {},
       session,
     );
-    return row;
+    return dto(row, responseFields.lecture);
   });
   if (data.summaryUrl !== undefined && previousFile !== data.summaryUrl)
     await cleanupFile(previousFile);
@@ -159,7 +161,7 @@ export async function saveMaterial(
       {},
       session,
     );
-    return record;
+    return dto(record, responseFields.material);
   });
   if (previousFile !== data.url || data.type === "text")
     await cleanupFile(previousFile);
@@ -254,37 +256,22 @@ export async function deleteDraft(
   for (const value of removedFiles) await cleanupFile(value);
 }
 export async function publishScheduled() {
-  const due = await Lecture.find({
-    status: "scheduled",
-    scheduledAt: { $lte: new Date() },
-  }).select("_id");
-  for (const item of due)
-    await transaction(async (session) => {
-      const row = await Lecture.findOneAndUpdate(
-        {
-          _id: item._id,
-          status: "scheduled",
-          scheduledAt: { $lte: new Date() },
-        },
-        [
-          {
-            $set: {
-              status: "published",
-              publishedAt: "$scheduledAt",
-              updatedAt: new Date(),
-            },
-          },
-        ],
-        { new: true, session },
-      );
-      if (row)
-        await audit(
-          row.updatedBy,
-          "lecture.published",
-          "lectures",
-          row._id,
-          { scheduled: true },
-          session,
-        );
+  let total = 0;
+  // Bound each transaction while draining the backlog. A concurrent publisher or
+  // editor causes a transaction retry, keeping publication and its audit atomic.
+  while (true) {
+    const published = await transaction(async session => {
+      const now = new Date();
+      const due = await Lecture.find({ status: "scheduled", scheduledAt: { $lte: now } })
+        .select("_id updatedBy").sort({ scheduledAt: 1, _id: 1 }).limit(100).session(session).lean();
+      if (!due.length) return 0;
+      await Lecture.updateMany({ _id: { $in: due.map(row => row._id) }, status: "scheduled", scheduledAt: { $lte: now } },
+        [{ $set: { status: "published", publishedAt: "$scheduledAt", updatedAt: now } }], { session });
+      await AuditLog.insertMany(due.map(row => ({ actor: row.updatedBy, action: "lecture.published",
+        entityType: "lectures", entityId: String(row._id), metadata: { scheduled: true } })), { session });
+      return due.length;
     });
+    if (!published) return { processed: total, published: total };
+    total += published;
+  }
 }

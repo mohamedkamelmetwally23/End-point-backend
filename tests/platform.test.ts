@@ -1,4 +1,4 @@
-import { beforeAll, afterAll, describe, it, expect } from "vitest";
+import { beforeAll, afterAll, describe, it, expect, vi } from "vitest";
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 import request from "supertest";
@@ -264,12 +264,15 @@ describe("Platform rules against real MongoDB", () => {
       .send({ ...data, collegeId: otherCollege._id })
       .expect(400);
     await request(app).post("/api/v1/auth/register").send(data).expect(200);
-    const login = await request(app)
+    const noTermStudent = request.agent(app);
+    const login = await noTermStudent
       .post("/api/v1/auth/login")
       .send({ email: data.email, password })
       .expect(200);
-    expect(login.body.data.user.academicYearId).toBe(String(year._id));
-    expect(login.body.data.activeTerm).toBeNull();
+    expect(Object.keys(login.body.data.user).sort()).toEqual(["_id", "fullName", "role"]);
+    const profile = await noTermStudent.get("/api/v1/profile").expect(200);
+    expect(profile.body.data.user.academicYearId).toBe(String(year._id));
+    expect(profile.body.data.activeTerm).toBeNull();
     expect(
       await Term.countDocuments({ academicYearId: year._id, status: "active" }),
     ).toBe(0);
@@ -293,7 +296,10 @@ describe("Platform rules against real MongoDB", () => {
       .expect(200);
     studentId = response.body.data.user._id;
     expect(response.body.data.user.passwordHash).toBeUndefined();
-    expect(response.body.data.activeTerm._id).toBe(termId);
+    expect(Object.keys(response.body.data.user).sort()).toEqual(["_id", "fullName", "role"]);
+    const profile = await student.get("/api/v1/profile").expect(200);
+    expect(profile.body.data.activeTerm._id).toBe(termId);
+    expect(profile.body.data.device).not.toHaveProperty("tokenHash");
     const user = await User.findById(studentId).select("+passwordHash");
     expect(user?.passwordHash).not.toBe(password);
   });
@@ -803,5 +809,72 @@ describe("Platform rules against real MongoDB", () => {
     );
     expect(await bcrypt.compare(password, user!.passwordHash)).toBe(true);
     delete process.env.INITIAL_ADMIN_PASSWORD;
+  });
+  it("paginates administrative reads and excludes internal audit metadata", async () => {
+    const users = await admin.get("/api/v1/admin/users?role=student&limit=1&page=1").expect(200);
+    expect(users.body.data).toHaveLength(1);
+    expect(users.body.pagination.limit).toBe(1);
+    expect(users.body.pagination.total).toBeGreaterThan(0);
+    expect(users.body.data[0]).not.toHaveProperty("__v");
+    const logs = await admin.get("/api/v1/admin/audit?limit=1").expect(200);
+    expect(logs.body.data).toHaveLength(1);
+    expect(logs.body.data[0]).not.toHaveProperty("metadata");
+    await admin.get("/api/v1/admin/orders?limit=101").expect(400);
+  });
+
+  it("publishes multiple bounded batches once, retaining dates and future schedules", async () => {
+    const actor = (await User.findOne({ role: "super_admin" }))!._id;
+    const scheduledAt = new Date(Date.now() - 60000);
+    const rows = await Lecture.insertMany(Array.from({ length: 101 }, (_, i) => ({
+      packageSubjectId: psId, title: `Batch ${i}`, status: "scheduled", scheduledAt,
+      createdBy: actor, updatedBy: actor,
+    })));
+    const future = await Lecture.create({ packageSubjectId: psId, title: "Future batch", status: "scheduled",
+      scheduledAt: new Date(Date.now() + 3600000), createdBy: actor, updatedBy: actor });
+    await Promise.all([publishScheduled(), publishScheduled()]);
+    await publishScheduled();
+    const ids = rows.map(row => row._id);
+    expect(await Lecture.countDocuments({ _id: { $in: ids }, status: "published", publishedAt: scheduledAt })).toBe(101);
+    expect(await AuditLog.countDocuments({ action: "lecture.published", entityId: { $in: ids.map(String) } })).toBe(101);
+    expect((await Lecture.findById(future._id))?.status).toBe("scheduled");
+  });
+
+  it("publishes through concurrent cron requests in batches with exactly one audit per lecture", async () => {
+    const previous = env.CRON_SECRET;
+    env.CRON_SECRET = "synthetic-integration-cron-secret-32-characters";
+    const update = vi.spyOn(Lecture, "updateMany");
+    const log = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      const actor = (await User.findOne({ role: "super_admin" }))!._id;
+      const scheduledAt = new Date(Date.now() - 60000);
+      const rows = await Lecture.insertMany(Array.from({ length: 101 }, (_, i) => ({
+        packageSubjectId: psId, title: `Cron ${i}`, status: "scheduled", scheduledAt,
+        createdBy: actor, updatedBy: actor,
+      })));
+      const future = await Lecture.create({ packageSubjectId: psId, title: "Future cron", status: "scheduled",
+        scheduledAt: new Date(Date.now() + 3600000), createdBy: actor, updatedBy: actor });
+      const published = await Lecture.create({ packageSubjectId: psId, title: "Already published", status: "published",
+        publishedAt: scheduledAt, createdBy: actor, updatedBy: actor });
+      const invoke = () => request(app).get("/api/internal/publish-due-lectures")
+        .set("Authorization", `Bearer ${env.CRON_SECRET}`).expect(200);
+      const results = await Promise.all([invoke(), invoke()]);
+      expect(results.reduce((sum, result) => sum + result.body.data.published, 0)).toBe(101);
+      expect(results.every(result => Buffer.byteLength(result.text) < 100)).toBe(true);
+      expect((await invoke()).body).toEqual({ data: { processed: 0, published: 0 } });
+      const ids = rows.map(row => row._id);
+      expect(await Lecture.countDocuments({ _id: { $in: ids }, status: "published", publishedAt: scheduledAt })).toBe(101);
+      expect(await AuditLog.countDocuments({ action: "lecture.published", entityId: { $in: ids.map(String) } })).toBe(101);
+      expect((await Lecture.findById(future._id))?.status).toBe("scheduled");
+      expect((await Lecture.findById(published._id))?.toObject()).toEqual(published.toObject());
+      expect(await AuditLog.countDocuments({ entityId: String(published._id) })).toBe(0);
+      expect(update).toHaveBeenCalled();
+      for (const [filter] of update.mock.calls) {
+        expect((filter as { _id: { $in: unknown[] } })._id.$in.length).toBeLessThanOrEqual(100);
+      }
+    } finally {
+      env.CRON_SECRET = previous;
+      update.mockRestore();
+      log.mockRestore();
+    }
   });
 });

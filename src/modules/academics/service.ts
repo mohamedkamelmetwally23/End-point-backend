@@ -1,3 +1,5 @@
+import { dto } from "../../shared/dto.js";
+const academicFields = "_id name collegeId academicYearId termId status order localOrder description";
 import { AcademicYear, College, Term, models } from "../domain/models.js";
 import {
   academicSchemas,
@@ -78,12 +80,12 @@ export async function activeTerm(collegeId: unknown, academicYearId: unknown) {
 export async function academics(publicOnly = false) {
   const filter = publicOnly ? { status: "active" } : {};
   const [colleges, academic_years, terms, subjects] = await Promise.all([
-    College.find(filter).lean(),
-    AcademicYear.find(filter).sort({ order: 1 }).lean(),
-    Term.find(publicOnly ? { status: "active" } : {})
+    College.find(filter).select("_id name status").lean(),
+    AcademicYear.find(filter).select("_id name collegeId order status").sort({ order: 1 }).lean(),
+    Term.find(publicOnly ? { status: "active" } : {}).select("_id name academicYearId order localOrder status")
       .sort({ order: 1 })
       .lean(),
-    models.subjects.find(filter).lean(),
+    models.subjects.find(filter).select("_id name description collegeId academicYearId termId status").lean(),
   ]);
   return { colleges, academic_years, terms, subjects };
 }
@@ -141,7 +143,7 @@ export async function saveAcademic(
             session,
           );
       }
-      return result;
+      return result.map(row => dto(row, academicFields));
     });
   }
   const key = kind as keyof typeof academicSchemas;
@@ -231,6 +233,6 @@ export async function saveAcademic(
       {},
       session,
     );
-    return record;
+    return dto(record, academicFields);
   });
 }
