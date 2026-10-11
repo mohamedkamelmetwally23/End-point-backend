@@ -38,7 +38,7 @@ it("serves both health URLs and CORS preflight without connecting to MongoDB", a
     .expect(200, { ok: true });
   await request(host)
     .get("/api/v1/health")
-    .expect(200, { data: { status: "ok" } });
+    .expect(200, { data: { status: "ok", version: "profile-route-fix-1" } });
   const preflight = await request(host)
     .options("/api/v1/auth/login")
     .set("Origin", env.FRONTEND_URL)

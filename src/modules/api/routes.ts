@@ -19,7 +19,7 @@ import { saveAssignment, listAssignments } from "../staff-assignments/service.js
 import { frequentLoginsToday, listAudit } from "../audit/service.js";
 const param = (value: unknown) => id.parse(value);
 export const router = Router();
-router.get("/health", (_req, res) => res.json({ data: { status: "ok" } }));
+router.get("/health", (_req, res) => res.json({ data: { status: "ok", version: "profile-route-fix-1" } }));
 router.get(
   "/public/academics",
   endpoint(() => academics.academics(true)),
