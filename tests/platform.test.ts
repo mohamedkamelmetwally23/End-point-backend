@@ -46,6 +46,9 @@ describe("Platform rules against real MongoDB", () => {
     orderId = "",
     expenseId = "";
   const password = "Test-password-2026!";
+  it("rejects unauthenticated profile reads", async () => {
+    await request(app).get("/api/v1/profile").expect(401);
+  });
   beforeAll(async () => {
     await mongoose.connect(env.MONGODB_URI, { dbName: database });
     confirmedTestDatabase(mongoose.connection.name, "test");
@@ -300,6 +303,17 @@ describe("Platform rules against real MongoDB", () => {
     const profile = await student.get("/api/v1/profile").expect(200);
     expect(profile.body.data.activeTerm._id).toBe(termId);
     expect(profile.body.data.device).not.toHaveProperty("tokenHash");
+    expect(Object.keys(profile.body.data).sort()).toEqual(["academicYear", "activeTerm", "college", "device", "user"]);
+    expect(Object.keys(profile.body.data.user).sort()).toEqual(["_id", "academicYearId", "collegeId", "email", "fullName", "phone", "role"]);
+    expect(Object.keys(profile.body.data.college).sort()).toEqual(["_id", "name"]);
+    expect(Object.keys(profile.body.data.activeTerm).every(key => ["_id", "name", "order", "localOrder"].includes(key))).toBe(true);
+    const me = await student.get("/api/v1/auth/me").expect(200);
+    expect(Object.keys(me.body.data.user).sort()).toEqual(["_id", "fullName", "role"]);
+    for (const key of ["role", "collegeId", "academicYearId", "activeTerm", "packageAccess"]) {
+      await student.patch("/api/v1/profile").send({ fullName: "Student", phone: "+201234567890", [key]: "restricted" }).expect(400);
+    }
+    await student.patch("/api/v1/profile").send({ fullName: "Student", phone: "" }).expect(200);
+    await student.patch("/api/v1/profile").send({ fullName: "Student", phone: "+201234567890" }).expect(200);
     const user = await User.findById(studentId).select("+passwordHash");
     expect(user?.passwordHash).not.toBe(password);
   });

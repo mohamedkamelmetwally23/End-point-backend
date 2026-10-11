@@ -9,6 +9,7 @@ import {
 import { academicCurriculum } from "../scripts/seeds/academic-curriculum.js";
 import { transaction } from "../src/shared/database.js";
 import { activeTerm } from "../src/modules/academics/service.js";
+import { profile } from "../src/modules/auth/service.js";
 import {
   listPackages,
   packageDetail,
@@ -98,6 +99,13 @@ it("activates first terms per year and enforces Explore, ownership and published
     expect((await Term.findById(terms[i * 2 + 1]!._id))?.status).toBe(
       "inactive",
     );
+    const profileStudent = await User.create({
+      fullName: `Profile year ${i + 1}`, email: `profile-year-${i + 1}@test.local`,
+      passwordHash: "fixture", role: "student", phone: "+201234567890", collegeId: college._id, academicYearId: years[i]!._id,
+    });
+    const result = await profile(profileStudent._id);
+    expect(result.activeTerm?.order).toBe(i * 2 + 1);
+    expect(result.academicYear?.order).toBe(i + 1);
   }
   const student = await User.create({
     fullName: "Year 3",
