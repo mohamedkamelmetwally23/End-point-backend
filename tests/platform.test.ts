@@ -3,7 +3,7 @@ import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 import request from "supertest";
 import { env } from "../src/config/env.js";
-import { app } from "../src/app.js";
+import app from "../src/app.js";
 import {
   models,
   User,
