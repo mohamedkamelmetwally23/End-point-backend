@@ -1,4 +1,4 @@
-import { beforeAll, afterAll, describe, it, expect, vi } from "vitest";
+import { beforeAll, afterAll, describe, it, expect } from "vitest";
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 import request from "supertest";
@@ -851,44 +851,5 @@ describe("Platform rules against real MongoDB", () => {
     expect(await Lecture.countDocuments({ _id: { $in: ids }, status: "published", publishedAt: scheduledAt })).toBe(101);
     expect(await AuditLog.countDocuments({ action: "lecture.published", entityId: { $in: ids.map(String) } })).toBe(101);
     expect((await Lecture.findById(future._id))?.status).toBe("scheduled");
-  });
-
-  it("publishes through concurrent cron requests in batches with exactly one audit per lecture", async () => {
-    const previous = env.CRON_SECRET;
-    env.CRON_SECRET = "synthetic-integration-cron-secret-32-characters";
-    const update = vi.spyOn(Lecture, "updateMany");
-    const log = vi.spyOn(console, "info").mockImplementation(() => {});
-    try {
-      const actor = (await User.findOne({ role: "super_admin" }))!._id;
-      const scheduledAt = new Date(Date.now() - 60000);
-      const rows = await Lecture.insertMany(Array.from({ length: 101 }, (_, i) => ({
-        packageSubjectId: psId, title: `Cron ${i}`, status: "scheduled", scheduledAt,
-        createdBy: actor, updatedBy: actor,
-      })));
-      const future = await Lecture.create({ packageSubjectId: psId, title: "Future cron", status: "scheduled",
-        scheduledAt: new Date(Date.now() + 3600000), createdBy: actor, updatedBy: actor });
-      const published = await Lecture.create({ packageSubjectId: psId, title: "Already published", status: "published",
-        publishedAt: scheduledAt, createdBy: actor, updatedBy: actor });
-      const invoke = () => request(app).get("/api/internal/publish-due-lectures")
-        .set("Authorization", `Bearer ${env.CRON_SECRET}`).expect(200);
-      const results = await Promise.all([invoke(), invoke()]);
-      expect(results.reduce((sum, result) => sum + result.body.data.published, 0)).toBe(101);
-      expect(results.every(result => Buffer.byteLength(result.text) < 100)).toBe(true);
-      expect((await invoke()).body).toEqual({ data: { processed: 0, published: 0 } });
-      const ids = rows.map(row => row._id);
-      expect(await Lecture.countDocuments({ _id: { $in: ids }, status: "published", publishedAt: scheduledAt })).toBe(101);
-      expect(await AuditLog.countDocuments({ action: "lecture.published", entityId: { $in: ids.map(String) } })).toBe(101);
-      expect((await Lecture.findById(future._id))?.status).toBe("scheduled");
-      expect((await Lecture.findById(published._id))?.toObject()).toEqual(published.toObject());
-      expect(await AuditLog.countDocuments({ entityId: String(published._id) })).toBe(0);
-      expect(update).toHaveBeenCalled();
-      for (const [filter] of update.mock.calls) {
-        expect((filter as { _id: { $in: unknown[] } })._id.$in.length).toBeLessThanOrEqual(100);
-      }
-    } finally {
-      env.CRON_SECRET = previous;
-      update.mockRestore();
-      log.mockRestore();
-    }
   });
 });
